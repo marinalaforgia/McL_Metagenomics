@@ -1,5 +1,9 @@
 rm(list=ls())
 
+# if (!requireNamespace("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install("decontam", version = "3.14")
+
 #### Load Libraries ####
 library(DESeq2)
 library(plyr)
@@ -9,13 +13,13 @@ library(phyloseq)
 library(decontam)
 library(vegan)
 library(Rmisc)
-
+library(broom)
 
 #http://bioconductor.org/packages/devel/bioc/vignettes/DESeq2/inst/doc/DESeq2.html
 
 #### Read in data ####
 
-## Kallisto is abundance, counts, and length, raw data fed into deseq
+## Kallisto is abundance, counts, and length, raw GENE ABUNDANCE data fed into deseq
 txi.kallisto <- readRDS("Data/Salmon/txi.kallisto.08042021.RDS")
 colnames(txi.kallisto$counts) <- sub("_S.*", "", colnames(txi.kallisto$counts))
 colnames(txi.kallisto$counts) <- sub("-", "_", colnames(txi.kallisto$counts))
@@ -35,25 +39,26 @@ txi.kallisto[[1]] <- txi.kallisto[[1]][,-c(1:3)]
 txi.kallisto[[2]] <- txi.kallisto[[2]][,-c(1:3)]
 txi.kallisto[[3]] <- txi.kallisto[[3]][,-c(1:3)]
 
-ddsTxi <- DESeqDataSetFromTximport(txi.kallisto,
-                                   colData = metadata,
-                                   design = ~ plant.water)
+# ddsTxi <- DESeqDataSetFromTximport(txi.kallisto,
+#                                    colData = metadata,
+#                                    design = ~ plant.water)
+# 
+# #remove any rows with no counts
+# dds <- ddsTxi[ rowMeans(counts(ddsTxi)) > 0.5, ] # check on filtering of dds obj
+# 
+# dds <- estimateSizeFactors(dds)
+# 
+# #run deseq diff abundance analysis
+# dds <- DESeq(dds)
+#saveRDS(dds.test, "Data/GL_dds.deseq.obj.10062021.RDS") # Cassie's original
+#dds <- readRDS("Data/DESeq/GL_dds.deseq.obj.09132021.RDS") # Controls removed
+dds <- readRDS("Data/DESeq/GL_dds.deseq.obj.10062021.RDS") # controls and contaminants removed
 
-#remove any rows with no counts
-dds <- ddsTxi[ rowMeans(counts(ddsTxi)) > 0.5, ]
-
-dds <- estimateSizeFactors(dds)
-
-#run deseq diff abundance analysis
-dds <- DESeq(dds)
-#saveRDS(dds.test, "Data/GL_dds.deseq.obj.10062021.RDS")
-dds <- readRDS("Data/DESeq/GL_dds.deseq.obj.09132021.RDS")
-#dds <- readRDS("Data/DESeq/GL_dds.deseq.obj.10062021.RDS")
 #extract deseq normalized counts
-normalized_counts <- counts(dds, normalized = F) # raw counts to run through decontam
+#normalized_counts <- counts(dds, normalized = F) # raw counts to run through decontam
 #normalized_counts <- counts(dds, normalized = T)
 #saveRDS(normalized_counts, "Data/DESeq/GL_normcounts.10062021.RDS")
-#norm.counts <- readRDS("Data/GL_normcounts.10062021.RDS")
+norm.counts <- readRDS("Data/GL_normcounts.10062021.RDS")
 #vsd <- varianceStabilizingTransformation(dds)
 vsd <- vst(dds, blind = T) # test blind = T for QA/QC
 #rld <- rlog(dds, blind = F) #crashed my computer
@@ -208,88 +213,88 @@ plotDispEsts(dds)
 # nrow(sigOE)
 # nrow(sigKD)
 
-#### Decontam ####
-dds <- readRDS("Data/DESeq/GL_dds.deseq.obj.09132021.RDS") # cassie's data
-#extract deseq normalized counts
-normalized_counts <- counts(dds, normalized = F) # raw counts to run through decontam
-metadata <- read.csv("Data/McL_metag_metadata.csv")
-metadata <- metadata[-c(1,3,5,6,8:10),] # only sequenced one water, one kit, and one mock
-#metadata <- filter(metadata, SampleSubType == "Rhizosphere_soil")
-row.names(metadata) <- metadata$SampleID
-colnames(normalized_counts) <- metadata$SampleID
-
-#first tell it which samples are the NC
-sample_data(ps)$is.neg <- sample_data(ps)$SampleType == "Kit"
-
-#threshold=0.5, which will identify as contaminants 
-#all sequences thare are more prevalent in negative controls than in positive samples
-
-contamdf.prev05 <- isContaminant(ps, method = "prevalence", neg = "is.neg", threshold = 0.5)
-table(contamdf.prev05$contaminant) # 4774 contaminants
-
-# #which ASV is contaminant
-# which(contamdf.prev05$contaminant)
-#
-# #Make phyloseq object of presence-absence in negative controls
-# ps.neg <- prune_samples(sample_data(ps)$is.neg == "TRUE", ps)
-# ps.neg.presence <- transform_sample_counts(ps.neg, function(abund) 1*(abund>0))
+# #### Decontam ####
+# dds <- readRDS("Data/DESeq/GL_dds.deseq.obj.09132021.RDS") # cassie's data
+# #extract deseq normalized counts
+# normalized_counts <- counts(dds, normalized = F) # raw counts to run through decontam
+# metadata <- read.csv("Data/McL_metag_metadata.csv")
+# metadata <- metadata[-c(1,3,5,6,8:10),] # only sequenced one water, one kit, and one mock
+# #metadata <- filter(metadata, SampleSubType == "Rhizosphere_soil")
+# row.names(metadata) <- metadata$SampleID
+# colnames(normalized_counts) <- metadata$SampleID
 # 
-# #Make phyloseq object of presence-absence in true positive samples
-# ps.pos <- prune_samples(sample_data(ps)$is.neg == "FALSE", ps)
-# ps.pos.presence <- transform_sample_counts(ps.pos, function(abund) 1*(abund>0))
+# #first tell it which samples are the NC
+# sample_data(ps)$is.neg <- sample_data(ps)$SampleType == "Kit"
 # 
-# #Make data.frame of prevalence in positive and negative samples 
-# #using prev threshold = 0.5
-# df.pres <- data.frame(prevalence.pos=taxa_sums(ps.pos.presence),
-#                       prevalence.neg=taxa_sums(ps.neg.presence),
-#                       contam.prev=contamdf.prev05$contaminant)
-# ggplot(data=df.pres, aes(x=prevalence.neg, y=prevalence.pos, color=contam.prev)) + geom_point()
-
-contam.rows <- which(contamdf.prev05$contaminant)
-contaminants <- rownames(contamdf.prev05[contam.rows,])
-rownames(normalized_counts)
-
-#returns list of all taxa, except contaminants
-counts <- normalized_counts[!(rownames(normalized_counts) %in% contaminants),]
-counts <- counts[,-c(1:3)] # get rid of controls
-
-counts <- readRDS("Data/counts_decontam.RDS")
-
-ps <- phyloseq(otu_table(counts, taxa_are_rows = T), sample_data(metadata))
-ps <- filter_taxa(ps, function(x) sum(x > 3) > (0.2*length(x)), TRUE)
-
-#run deseq diff abundance analysis
-
-metadata <- read.csv("Data/McL_metag_metadata.csv")
-metadata <- filter(metadata, SampleSubType == "Rhizosphere_soil")
-row.names(metadata) <- metadata$SampleID
-metadata$plant.water <- paste(metadata$PlantTrt, metadata$WaterTrt, sep = ".")
-
-dds <- phyloseq_to_deseq2(ps, ~ plant.water)
-
-
-# dds <- DESeqDataSetFromMatrix(counts,
-#                               colData = metadata,
-#                               design = ~ plant.water,
-#                               tidy = FALSE,
-#                               ignoreRank = FALSE)
-
-#remove any rows with no counts
-
-#dds <- dds[rowSums(counts(dds)) > 1, ]
-
-#dds  <- dds[sum(counts(dds) > 3) > (0.2*length(counts(dds))),]
-dds <- estimateSizeFactors(dds)
-
-#run deseq diff abundance analysis
-dds <- DESeq(dds)
-
-saveRDS(dds, "GL_dds.deseq.obj.10212021.RDS")
+# #threshold=0.5, which will identify as contaminants 
+# #all sequences thare are more prevalent in negative controls than in positive samples
+# 
+# contamdf.prev05 <- isContaminant(ps, method = "prevalence", neg = "is.neg", threshold = 0.5)
+# table(contamdf.prev05$contaminant) # 4774 contaminants
+# 
+# # #which ASV is contaminant
+# # which(contamdf.prev05$contaminant)
+# #
+# # #Make phyloseq object of presence-absence in negative controls
+# # ps.neg <- prune_samples(sample_data(ps)$is.neg == "TRUE", ps)
+# # ps.neg.presence <- transform_sample_counts(ps.neg, function(abund) 1*(abund>0))
+# # 
+# # #Make phyloseq object of presence-absence in true positive samples
+# # ps.pos <- prune_samples(sample_data(ps)$is.neg == "FALSE", ps)
+# # ps.pos.presence <- transform_sample_counts(ps.pos, function(abund) 1*(abund>0))
+# # 
+# # #Make data.frame of prevalence in positive and negative samples 
+# # #using prev threshold = 0.5
+# # df.pres <- data.frame(prevalence.pos=taxa_sums(ps.pos.presence),
+# #                       prevalence.neg=taxa_sums(ps.neg.presence),
+# #                       contam.prev=contamdf.prev05$contaminant)
+# # ggplot(data=df.pres, aes(x=prevalence.neg, y=prevalence.pos, color=contam.prev)) + geom_point()
+# 
+# contam.rows <- which(contamdf.prev05$contaminant)
+# contaminants <- rownames(contamdf.prev05[contam.rows,])
+# rownames(normalized_counts)
+# 
+# #returns list of all taxa, except contaminants
+# counts <- normalized_counts[!(rownames(normalized_counts) %in% contaminants),]
+# counts <- counts[,-c(1:3)] # get rid of controls
+# 
+# counts <- readRDS("Data/DESeq/counts_decontam.RDS")
+# 
+# ps <- phyloseq(otu_table(counts, taxa_are_rows = T), sample_data(metadata))
+# ps <- filter_taxa(ps, function(x) sum(x > 3) > (0.2*length(x)), TRUE)
+# 
+# #run deseq diff abundance analysis
+# 
+# metadata <- read.csv("Data/McL_metag_metadata.csv")
+# metadata <- filter(metadata, SampleSubType == "Rhizosphere_soil")
+# row.names(metadata) <- metadata$SampleID
+# metadata$plant.water <- paste(metadata$PlantTrt, metadata$WaterTrt, sep = ".")
+# 
+# dds <- phyloseq_to_deseq2(ps, ~ plant.water)
+# 
+# 
+# # dds <- DESeqDataSetFromMatrix(counts,
+# #                               colData = metadata,
+# #                               design = ~ plant.water,
+# #                               tidy = FALSE,
+# #                               ignoreRank = FALSE)
+# 
+# #remove any rows with no counts
+# 
+# #dds <- dds[rowSums(counts(dds)) > 1, ]
+# 
+# #dds  <- dds[sum(counts(dds) > 3) > (0.2*length(counts(dds))),]
+# dds <- estimateSizeFactors(dds)
+# 
+# #run deseq diff abundance analysis
+# dds <- DESeq(dds)
+# 
+# saveRDS(dds, "GL_dds.deseq.obj.10212021.RDS")
 
 dds <- readRDS("Data/DESeq/GL_dds.deseq.obj.10212021.RDS")
 
 #### DESeq goodness of fit ####
-
+dds <- readRDS("Data/DESeq/GL_dds.deseq.obj.10212021.RDS")
 plotDispEsts(dds)
 
 #### Ordination ####
@@ -315,11 +320,8 @@ ggplot(df) +
     geom_point(aes(x=PC3, y=PC4, color = PlantTrt)) +
     facet_wrap(~WaterTrt)
 
-vsd_cor <- cor(vsd_mat) 
-pheatmap(vsd_cor, annotation = metadata[,c(7,12)]) # no idea if this is telling me anything
-
 # Are they sig diff though?
-dist.matrix <- t(data.frame(otu_table(ps.brack)))
+dist.matrix <- t(data.frame(otu_table(ps.brack))) 
 bray.not.na <- vegdist(dist.matrix, method = "bray")
 set.seed(50)
 adonis(bray.not.na ~ WaterTrt * PlantTrt, as(sample_data(ps.brack), "data.frame"), permutations = 9999)
@@ -477,6 +479,40 @@ ggplot(test, aes(x = Category3, y = logchange)) +
 species <- read_tsv("Data/S_bracken_summary.tsv")
 species <- filter(species, name != "Homo sapiens", )
 
+species2 <- species %>% 
+  dplyr::select(ends_with("frac"))
+species2 <- rbind(species2, t(data.frame(unident = (1 - colSums(species2)))))
+
+colnames(species2) <- sub("_S.*", "", colnames(species2))
+colnames(species2) <- sub("-", "_", colnames(species2))
+
+species2 <- as.data.frame(species2[,-c(67,68,69)])
+rownames(species2) <- c(species$name, "unidentified")
+
+ps.brack <- phyloseq(otu_table(species2, taxa_are_rows = T), sample_data(metadata2))
+
+BK_pcoa <- ordinate(
+  physeq = ps.brack, 
+  method = "PCoA", 
+  distance = "bray")
+# library(devtools)
+# install_version("vegan", version ="2.5-5", repos = "http://cran.us.r-project.org")
+
+
+dist.matrix <- t(data.frame(otu_table(ps.brack)))
+bray.not.na <- vegdist(dist.matrix, method = "bray")
+DistBC <- phyloseq::distance(BK_pcoa, method = "bray", type = "samples") # not working, postentiall known issue with vegan/phyloseq
+
+set.seed(50)
+adonis(bray.not.na ~ WaterTrt * PlantTrt, as(sample_data(ps.brack), "data.frame"), permutations = 9999) # hm. plant treatments are different but not watering treatments? >_<
+
+plot_ordination(ps.brack, BK_pcoa, color = "PlantTrt", shape = "PlantTrt") +
+  theme_bw(base_size = 15) +
+  geom_point(size = 2) +
+  facet_wrap(~WaterTrt) +
+  stat_ellipse()
+
+## now at the family level
 family <- read_tsv("Data/F_bracken_summary.tsv")
 family <- filter(family, name != "Hominidae", )
 
@@ -516,7 +552,7 @@ BK_pcoa <- ordinate(
 
 dist.matrix <- t(data.frame(otu_table(ps.brack)))
 bray.not.na <- vegdist(dist.matrix, method = "bray")
-#DistBC <- phyloseq::distance(BK_pcoa, method = "bray", type = "samples") # not working, postentiall known issue with vegan/phyloseq
+DistBC <- phyloseq::distance(BK_pcoa, method = "bray", type = "samples") # not working, postentiall known issue with vegan/phyloseq
 
 set.seed(50)
 adonis(bray.not.na ~ WaterTrt * PlantTrt, as(sample_data(ps.brack), "data.frame"), permutations = 9999) # hm. plant treatments are different but not watering treatments? >_<
@@ -541,3 +577,8 @@ ggplot(ST.sum, aes(y = prop, x = Treatment, fill = PlantTrt)) +
   geom_bar(stat = "identity") +
   #geom_errorbar(aes(ymin = prop - se, ymax = prop + se), width = 0.2) +
   scale_color_viridis_d()
+
+#### Functional Analyses ####
+fun <- read.csv("Data/GL_function_per_gene.csv")
+head(fun)
+colnames(fun)

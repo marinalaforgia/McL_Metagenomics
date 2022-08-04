@@ -15,4 +15,4 @@ GL_fun_table <- GL_fun %>% pivot_wider(names_from = source, values_from = `funct
 
 GL_fun_table <- apply(GL_fun_table,2,as.character)
 
-write.csv(GL_fun_table, "GL_function_per_gene.csv", row.names=FALSE)
+write.csv(GL_fun_table, "GL_function_per_gene.csv", row.names=FALSE) # this is on dropbox

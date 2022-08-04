@@ -4,6 +4,10 @@ rm(list=ls())
 #     install.packages("BiocManager")
 # BiocManager::install("decontam", version = "3.14")
 
+# source tracker
+### normalized counts before decontam/removal of controls
+### for all my analyses decontam and remove controls
+
 #### Load Libraries ####
 library(DESeq2)
 library(plyr)
@@ -55,8 +59,11 @@ txi.kallisto[[3]] <- txi.kallisto[[3]][,-c(1:3)]
 dds <- readRDS("Data/DESeq/GL_dds.deseq.obj.10062021.RDS") # controls and contaminants removed
 
 #extract deseq normalized counts
-#normalized_counts <- counts(dds, normalized = F) # raw counts to run through decontam
-#normalized_counts <- counts(dds, normalized = T)
+#normalized_counts <- counts(dds, normalized = F) # raw counts to run through decontam to get it into the right format maybe? non-normalized, just making a file of genes and counts
+
+# save RDS files in box 
+#normalized_counts <- counts(dds, normalized = T) # for cassie to run sourcetracker, normalized, pre-decontam
+
 #saveRDS(normalized_counts, "Data/DESeq/GL_normcounts.10062021.RDS")
 norm.counts <- readRDS("Data/GL_normcounts.10062021.RDS")
 #vsd <- varianceStabilizingTransformation(dds)
@@ -214,6 +221,8 @@ plotDispEsts(dds)
 # nrow(sigKD)
 
 # #### Decontam ####
+## dds <- dds[sum(counts > 3) > (0.2*length(counts)), ] #
+
 # dds <- readRDS("Data/DESeq/GL_dds.deseq.obj.09132021.RDS") # cassie's data
 # #extract deseq normalized counts
 # normalized_counts <- counts(dds, normalized = F) # raw counts to run through decontam
@@ -258,9 +267,9 @@ plotDispEsts(dds)
 # counts <- normalized_counts[!(rownames(normalized_counts) %in% contaminants),]
 # counts <- counts[,-c(1:3)] # get rid of controls
 # 
-# counts <- readRDS("Data/DESeq/counts_decontam.RDS")
+counts <- readRDS("Data/DESeq/counts_decontam.RDS")
 # 
-# ps <- phyloseq(otu_table(counts, taxa_are_rows = T), sample_data(metadata))
+ps <- phyloseq(otu_table(counts, taxa_are_rows = T), sample_data(metadata))
 # ps <- filter_taxa(ps, function(x) sum(x > 3) > (0.2*length(x)), TRUE)
 # 
 # #run deseq diff abundance analysis
@@ -298,6 +307,7 @@ dds <- readRDS("Data/DESeq/GL_dds.deseq.obj.10212021.RDS")
 plotDispEsts(dds)
 
 #### Ordination ####
+# are we doing ordinations on genes? or taxonomy?
 vsd <- vst(dds, blind = T) # test blind = T for QA/QC
 #rld <- rlog(dds, blind = F) #crashed my computer
 
@@ -321,10 +331,10 @@ ggplot(df) +
     facet_wrap(~WaterTrt)
 
 # Are they sig diff though?
-dist.matrix <- t(data.frame(otu_table(ps.brack))) 
-bray.not.na <- vegdist(dist.matrix, method = "bray")
+DistBC <- phyloseq::distance(ps, method = "bray", type = "samples") 
+
 set.seed(50)
-adonis(bray.not.na ~ WaterTrt * PlantTrt, as(sample_data(ps.brack), "data.frame"), permutations = 9999)
+adonis(DistBC ~ WaterTrt * PlantTrt, as(sample_data(ps), "data.frame"), permutations = 9999) 
 
 #### Contrasts ####
 res <- results(dds) 
@@ -475,7 +485,7 @@ ggplot(test, aes(x = Category3, y = logchange)) +
   coord_flip() +
   facet_wrap(~contrast)
 
-#### Bracken ####
+#### Bracken (read level taxonomy) ####
 species <- read_tsv("Data/S_bracken_summary.tsv")
 species <- filter(species, name != "Homo sapiens", )
 
@@ -495,16 +505,17 @@ BK_pcoa <- ordinate(
   physeq = ps.brack, 
   method = "PCoA", 
   distance = "bray")
+
 # library(devtools)
 # install_version("vegan", version ="2.5-5", repos = "http://cran.us.r-project.org")
 
 
-dist.matrix <- t(data.frame(otu_table(ps.brack)))
-bray.not.na <- vegdist(dist.matrix, method = "bray")
-DistBC <- phyloseq::distance(BK_pcoa, method = "bray", type = "samples") # not working, postentiall known issue with vegan/phyloseq
+# dist.matrix <- t(data.frame(otu_table(ps.brack)))
+# bray.not.na <- vegdist(dist.matrix, method = "bray")
+DistBC <- phyloseq::distance(ps.brack, method = "bray", type = "samples") 
 
 set.seed(50)
-adonis(bray.not.na ~ WaterTrt * PlantTrt, as(sample_data(ps.brack), "data.frame"), permutations = 9999) # hm. plant treatments are different but not watering treatments? >_<
+adonis(DistBC ~ WaterTrt * PlantTrt, as(sample_data(ps.brack), "data.frame"), permutations = 9999) # hm. plant treatments are different but not watering treatments? >_<
 
 plot_ordination(ps.brack, BK_pcoa, color = "PlantTrt", shape = "PlantTrt") +
   theme_bw(base_size = 15) +

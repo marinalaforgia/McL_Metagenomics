@@ -6,6 +6,9 @@
 ## 3. Joined MMSeq and Kaiju taxonomy file
 ## 4. Metadata file
 
+## rarefy then agglomerate for ordination to Cassie for arrows
+## non-rarefied agglomerate for deseq
+## 
 # Outline of analysis
 
 rm(list=ls())
@@ -30,40 +33,49 @@ library(ggordiplots)
 library(ecole) #pairwise adonis2
 library(pairwiseAdonis)
 library(coin)
-
+library(cowplot)
+library(betapart)
+library(ggpubr)
 
 # Read in data ####
 #count.gene <- readRDS("Data/Final-Data/txi.kallisto.08042021.RDS")
-fun.gene <- read.csv("Data/Final-Data/gl_fun_only_keep_alterate.csv")
-tax.gene <- read.delim("Data/Final-Data/gl_tax_filtset_genes_to_remove.tsv")
+fun.gene <- read.csv("Data/Final-Data/gl_fun_only_keep_121422.csv")
+tax.gene <- read.delim("Data/Final-Data/gl_tax_filtset_genes_to_remove_121422.tsv")
 metadata <- read.csv("Data/Final-Data/McL_metag_metadata.csv")
+latlong <- read.csv("Data/Lat-Long.csv")
 
 # Prepare data ####
 
 ## Gene count prep ####
-colnames(count.gene$counts) <- sub("_S.*", "", colnames(count.gene$counts))
-colnames(count.gene$counts) <- sub("-", "_", colnames(count.gene$counts))
-colnames(count.gene$abundance) <- sub("_S.*", "", colnames(count.gene$abundance))
-colnames(count.gene$abundance) <- sub("-", "_", colnames(count.gene$abundance))
+# colnames(count.gene$counts) <- sub("_S.*", "", colnames(count.gene$counts))
+# colnames(count.gene$counts) <- sub("-", "_", colnames(count.gene$counts))
+# colnames(count.gene$abundance) <- sub("_S.*", "", colnames(count.gene$abundance))
+# colnames(count.gene$abundance) <- sub("-", "_", colnames(count.gene$abundance))
 
 ## Taxa prep ####
-# domain.y = Kaiju, domain.x = mmseqs
-colnames(tax.gene)[7] <- "Domain.mmseqs"
-colnames(tax.gene)[8] <- "Domain.kaiju"
+# Domain = Kaiju
 tax.gene <- filter(tax.gene, Joined_Domain != "Remove")
 row.names(tax.gene) <- tax.gene$gene
 tax.gene <- tax.gene[order(tax.gene$gene),]
 tax.gene <- tax.gene[,-1]
-tax.gene <- as.matrix(tax.gene)
+tax.gene <- tax.gene[,c(7:13)]
 
 ## Function prep ####
 fun.gene$gene <- gsub("^.*\\_", "", fun.gene$gene)
 row.names(fun.gene) <- fun.gene$gene
 fun.gene <- fun.gene[order(fun.gene$gene),]
-fun.gene <- fun.gene[,-1]
+fun.gene <- fun.gene[,c(11,12,10)] # change order
+fun.gene$COG20_CATEGORY <- gsub("!.*$", "", fun.gene$COG20_CATEGORY)
+fun.gene$COG20_FUNCTION <- gsub("!.*$", "", fun.gene$COG20_FUNCTION)
+fun.gene$COG20_PATHWAY <- gsub("!.*$", "", fun.gene$COG20_PATHWAY)
+
+fun.gene <- fun.gene[rownames(fun.gene) %in% rownames(tax.gene),]
+tax.gene <- tax.gene[rownames(tax.gene) %in% rownames(fun.gene),]
 fun.gene <- as.matrix(fun.gene)
+tax.gene <- as.matrix(tax.gene)
 
 ## Metadata prep ####
+metadata <- merge(metadata, latlong, by = "Plot", all.x = T, all.y = F)
 
 # removes controls we didn't sequence: GLM_0698, GLM_0696, GLM_0694, GLM_0693, GLM_0392, GLM_0391, GLM_0390
 to.rm <- c("GLM_0698", "GLM_0696", "GLM_0694", "GLM_0693", "GLM_0392", "GLM_0391", "GLM_0390")
@@ -71,139 +83,539 @@ metadata <- metadata[!(metadata$SampleID %in% to.rm),] # sequenced one water, on
 row.names(metadata) <- metadata$SampleID
 metadata$plant.water <- paste(metadata$PlantTrt, metadata$WaterTrt, sep = ".")
 
-metadata$PlotSubTreatmentName <- recode_factor(metadata$PlotSubTreatmentName, ST_forbs_X_grasses = "forb mix 1 + grasses", SA_forbs_X_grasses = "forb mix 2 + grasses", Stress_avoiding_forbs = "forb mix 2", Stress_tolerant_forbs = "forb mix 1")
+metadata$PlotSubTreatmentName <- recode_factor(metadata$PlotSubTreatmentName, ST_forbs_X_grasses = "native mix 1 + invasives", SA_forbs_X_grasses = "native mix 2 + invasives", Stress_avoiding_forbs = "native mix 2", Stress_tolerant_forbs = "native mix 1")
 
 #colnames(count.gene[[1]]) == metadata[,"SampleID"] # make sure everything is in the right order
 
 controls <- c("GLM_0697", "GLM_0695", "GLM_0393")
 metadata.nocontrols <- metadata[!(metadata$SampleID %in% controls),]
 
-metadata.nocontrols$PlantTrt <- recode_factor(metadata.nocontrols$PlantTrt, forb = "forbs",  mix = "forbs & grasses")
-metadata.nocontrols$PlantTrt <- factor(metadata.nocontrols$PlantTrt, levels = c("forbs", "grasses", "forbs & grasses"))
+metadata.nocontrols$PlantTrt <- recode_factor(metadata.nocontrols$PlantTrt, forb = "natives",  grasses = "invasives")
 
-metadata.nocontrols$WaterTrt <- factor(metadata.nocontrols$WaterTrt, levels = c("Drought", "Control", "Watering"))
+metadata.nocontrols$PlantTrt <- factor(metadata.nocontrols$PlantTrt, levels = c("natives", "invasives", "mix"))
 
-metadata.nocontrols$PlotSubTreatmentName <- factor(metadata.nocontrols$PlotSubTreatmentName, levels = c("forb mix 1", "forb mix 2", "Invasive_grasses", "forb mix 1 + grasses", "forb mix 2 + grasses"))
+metadata.nocontrols$WaterTrt <- recode_factor(metadata.nocontrols$WaterTrt, Watering = "watered", Drought = "drought", Control = "control")
+
+metadata.nocontrols$WaterTrt <- factor(metadata.nocontrols$WaterTrt, levels = c("drought", "control", "watered"))
+
+metadata.nocontrols$PlotSubTreatmentName <- factor(metadata.nocontrols$PlotSubTreatmentName, levels = c("native mix 1", "native mix 2", "Invasive_grasses", "native mix 1 + invasives", "native mix 2 + invasives"))
+
 
 ## Filter data ####
 
-ddsTxi <- DESeqDataSetFromTximport(count.gene,
-                                   colData = metadata,
-                                   design = ~ plant.water)
+# ddsTxi <- DESeqDataSetFromTximport(count.gene,
+#                                    colData = metadata,
+#                                    design = ~ plant.water)
+# 
+# saveRDS(ddsTxi, "GL_ddsTxi.deseq.obj.12082022.RDS")
 
-# Remove rows with no counts and genes not seen more than 3 times in at least 20% of the samples. This protects against genes with small mean & trivially large C.V
-ddsTxi <- ddsTxi[rowSums(counts(ddsTxi)) > 1, ] # remove rows with no counts
-ddsTxi <- ddsTxi[rowSums(counts(ddsTxi) > 3) >= (0.2*ncol(counts(ddsTxi))), ] 
+# Remove rows with no counts and genes not seen more than 3 times in at least 5% of the samples. This protects against genes with small mean & trivially large C.V
+
+# ddsTxi <- ddsTxi[rowSums(counts(ddsTxi)) > 1, ] # remove genes with no counts
+# ddsTxi <- ddsTxi[rowSums(counts(ddsTxi) > 3) >= (0.05*ncol(counts(ddsTxi))), ] 
+# 
+# 
+# # saveRDS(ddsTxi, "GL_ddsTxi.deseq.obj.filt.3x.5perc.12082022.RDS")
+# ddsTxi <- readRDS("Data/Final-Data/GL_ddsTxi.deseq.obj.filt.3x.5perc.12082022.RDS")
 
 ## Decontam Counts ####
-contam_counts <- counts(ddsTxi, normalized = F) # object for decontam
-
-ps <- phyloseq(otu_table(contam_counts, taxa_are_rows = T), sample_data(metadata))
-
-#first tell it which samples are the NC
-sample_data(ps)$is.neg <- sample_data(ps)$SampleType == "Kit"
-
-#all sequences that are more prevalent in negative controls than in positive samples
-contamdf.prev05 <- isContaminant(ps, method = "prevalence", neg = "is.neg", threshold = 0.5)
-table(contamdf.prev05$contaminant) # 53 contaminants 
-
-#Make phyloseq object of presence-absence in negative controls
-ps.neg <- prune_samples(sample_data(ps)$is.neg == "TRUE", ps)
-ps.neg.presence <- transform_sample_counts(ps.neg, function(abund) 1*(abund>0))
-
-#Make phyloseq object of presence-absence in true positive samples
-ps.pos <- prune_samples(sample_data(ps)$is.neg == "FALSE", ps)
-ps.pos.presence <- transform_sample_counts(ps.pos, function(abund) 1*(abund>0))
-
-#Make data.frame of prevalence in positive and negative samples
-#using prev threshold = 0.5
-df.pres <- data.frame(prevalence.pos = taxa_sums(ps.pos.presence),
-                      prevalence.neg = taxa_sums(ps.neg.presence),
-                      contam.prev = contamdf.prev05$contaminant)
-
-ggplot(df.pres, aes(x = prevalence.neg, y = prevalence.pos, color = contam.prev)) +
-  geom_point()
-
-contam.rows <- which(contamdf.prev05$contaminant)
-contaminants <- rownames(contamdf.prev05[contam.rows,])
-
-#returns list of all taxa, except contaminants
-decontam_counts <- contam_counts[!(rownames(contam_counts) %in% contaminants),]
-
-decontam_counts_nocontrols <- decontam_counts[, !(colnames(decontam_counts) %in% controls)] # get rid of controls
-
-saveRDS(decontam_counts_nocontrols, "Data/Final-Data/decontam_non-norm_counts_nocontrols.RDS")
-
-rm(ps, ps.neg, ps.neg.presence, ps.pos, ps.pos.presence, ddsTxi)
+# contam_counts <- counts(ddsTxi, normalized = F) # object for decontam
+# 
+# ps <- phyloseq(otu_table(contam_counts, taxa_are_rows = T), sample_data(metadata))
+# 
+# #first tell it which samples are the NC
+# sample_data(ps)$is.neg <- sample_data(ps)$SampleType == "Kit"
+# 
+# #all sequences that are more prevalent in negative controls than in positive samples
+# contamdf.prev05 <- isContaminant(ps, method = "prevalence", neg = "is.neg", threshold = 0.5)
+# table(contamdf.prev05$contaminant) # 143 contaminants 
+# 
+# #Make phyloseq object of presence-absence in negative controls
+# ps.neg <- prune_samples(sample_data(ps)$is.neg == "TRUE", ps)
+# ps.neg.presence <- transform_sample_counts(ps.neg, function(abund) 1*(abund>0))
+# 
+# #Make phyloseq object of presence-absence in true positive samples
+# ps.pos <- prune_samples(sample_data(ps)$is.neg == "FALSE", ps)
+# ps.pos.presence <- transform_sample_counts(ps.pos, function(abund) 1*(abund>0))
+# 
+# #Make data.frame of prevalence in positive and negative samples
+# #using prev threshold = 0.5
+# df.pres <- data.frame(prevalence.pos = taxa_sums(ps.pos.presence),
+#                       prevalence.neg = taxa_sums(ps.neg.presence),
+#                       contam.prev = contamdf.prev05$contaminant)
+# 
+# ggplot(df.pres, aes(x = prevalence.neg, y = prevalence.pos, color = contam.prev)) +
+#   geom_point()
+# 
+# contam.rows <- which(contamdf.prev05$contaminant)
+# contaminants <- rownames(contamdf.prev05[contam.rows,])
+# 
+# #returns list of all taxa, except contaminants
+# decontam_counts <- contam_counts[!(rownames(contam_counts) %in% contaminants),]
+# 
+# decontam_counts_nocontrols <- decontam_counts[, !(colnames(decontam_counts) %in% controls)] # get rid of controls
+# 
+# saveRDS(decontam_counts_nocontrols, "Data/Final-Data/decontam_non-norm_counts_nocontrols.RDS")
+# 
+# rm(ps, ps.neg, ps.neg.presence, ps.pos, ps.pos.presence, ddsTxi)
 
 ## Sourcetracker Prep ####
-dds <- DESeqDataSetFromMatrix(decontam_counts,
-                              colData = metadata,
-                              design = ~ plant.water)
+# dds <- DESeqDataSetFromMatrix(decontam_counts,
+#                               colData = metadata,
+#                               design = ~ plant.water)
+# 
+# 
+# dds <- estimateSizeFactors(dds)
+# 
+# normalized_counts <- counts(dds, normalized = T) 
+# 
+# saveRDS(normalized_counts, "Data/Final-Data/decontam_norm_counts_w-controls.RDS") # output for Source Tracker
 
-
-dds <- estimateSizeFactors(dds)
-
-normalized_counts <- counts(dds, normalized = T) 
-
-saveRDS(normalized_counts, "Data/Final-Data/decontam_norm_counts_w-controls.RDS") # output for Source Tracker
-
-## DESeq2 genes ####
-decontam_counts_nocontrols <- readRDS("Data/Final-Data/decontam_non-norm_counts_nocontrols.RDS")
+## Filter Counts ####
+decontam_counts_nocontrols <- readRDS("Data/Final-Data/decontam_non-norm_counts_nocontrols.RDS") # not normalized
 
 # filter out unwanted genes (ribosomes, plant associated etc)
+decontam_counts_nocontrols <- decontam_counts_nocontrols[row.names(decontam_counts_nocontrols) < 8829098,]
+
 decontam_counts_nocontrols <- decontam_counts_nocontrols[rownames(decontam_counts_nocontrols) %in% rownames(tax.gene),]
 
 decontam_counts_nocontrols <- decontam_counts_nocontrols[rownames(decontam_counts_nocontrols) %in% rownames(fun.gene),]
 
-dds <- DESeqDataSetFromMatrix(decontam_counts_nocontrols,
-                                   colData = metadata.nocontrols,
-                                   design = ~ plant.water)
 
-dds <- estimateSizeFactors(dds)
+## Set up contrasts ####
+contrasts <- c("FW.FC", 
+               "FD.FC", 
+               "MD.FC", 
+               "MW.FC", 
+               "GD.GC",
+               "GW.GC",
+               "MD.GC",
+               "MW.GC",
+               "FC.GC",
+               "FD.GD",
+               "FW.GW",
+               "MD.FD",
+               "MW.FW",
+               "MC.FC",
+               "MC.GC")
 
-dds <- DESeq(dds)
+# contrasts: name of factor, numerator for fold change, denominator for fold change; i.e. log2(forb.Watering/forbs.Control) so if something is higher in forb watering, the number is greater than one, so the log fold change > 0, if something is higher in the control treatment then the number is less than one so the log2 fold change is negative
 
-plotDispEsts(dds)
 
-norm_counts <- counts(dds, normalized = T) 
+contrast.list <- list(FW.FC = c("plant.water", "forb.Watering", "forb.Control"),
+                      FD.FC = c("plant.water","forb.Drought","forb.Control"),
+                      MD.FC = c("plant.water","mix.Drought","forb.Control"),
+                      MW.FC = c("plant.water","mix.Watering","forb.Control"),
+                      GD.GC = c("plant.water","grasses.Drought","grasses.Control"),
+                      GW.GC = c("plant.water","grasses.Watering","grasses.Control"),
+                      MD.GC = c("plant.water","mix.Drought","grasses.Control"),
+                      MW.GC = c("plant.water","mix.Watering","grasses.Control"),
+                      FC.GC = c("plant.water","forb.Control","grasses.Control"),
+                      FD.GD = c("plant.water","forb.Drought","grasses.Drought"),
+                      FW.GW = c("plant.water","forb.Watering","grasses.Watering"),
+                      MD.FD = c("plant.water","mix.Drought","forb.Drought"),
+                      MW.FW = c("plant.water", "mix.Watering", "forb.Watering"),
+                      MC.FC = c("plant.water", "mix.Control", "forb.Control"), 
+                      MC.GC = c("plant.water", "mix.Control", "grasses.Watering"))
 
-## DESeq2 functions ####
+plot.name.list <- list(FW.FC = "Native Watered v. Native Control",
+                       FD.FC = "Native Drought v. Native Control",
+                       MD.FC = "Mix Drought v. Native Control",
+                       MW.FC = "Mix Watered v. Native Control",
+                       GD.GC = "Invasive Drought v. Invasive Control",
+                       GW.GC = "Invasive Watered v. Invasive Control",
+                       MD.GC = "Mix Drought v. Invasive Control",
+                       MW.GC  = "Mix Watered v. Invasive Control",
+                       FC.GC = "Native Control v. Invasive Control",
+                       FD.GD = "Native Drought v. Invasive Drought",
+                       FW.GW = "Native Watered v. Invasive Watered",
+                       MD.FD = "Mix Drought v. Native Drought",
+                       MW.FW = "Mix Watered v. Native Watered",
+                       MC.FC = "Mix Control v. Native Control",
+                       MC.GC = "Mix Control v. Invasive Control")
 
-ps <- phyloseq(otu_table(norm_counts, taxa_are_rows = T), sample_data(metadata.nocontrols), tax_table(fun.gene))
+# DESeq2 genes ####
+ps <- phyloseq(otu_table(decontam_counts_nocontrols, 
+                         taxa_are_rows = T), 
+               sample_data(metadata.nocontrols))
 
-## DESeq2 Genus ####
+ps <- prune_samples(sample_data(ps)$SampleNumber != 241, ps)
 
-# Ordination ####
-## Genes ####
-### Prep ####
+treat <- phyloseq_to_deseq2(ps, ~ plant.water)
 
-ps <- phyloseq(otu_table(norm_counts, taxa_are_rows = T), sample_data(metadata.nocontrols), tax_table(tax.gene))
+dds.pw <- DESeq(treat)
 
-ps.hell <- transform(ps, "hellinger")
+alpha = 0.05
+res.list <- list()
+plot.list <- list()
+sig.genes <- c()
 
-PCoA_hell <- ordinate(physeq = ps.hell, method = "PCoA", distance = "euclidean")
+for(i in contrasts) {
+  #get results for each contrast
+  res <- results(dds.pw, contrast = contrast.list[[i]], pAdjustMethod = "BH")
+  #filter results by p-value
+  res.alpha <- res[which(res$padj < alpha), ]
+  #tidy results 
+  res.list[[i]] <- tidy(res.alpha)
+
+ res.list[[i]]$gene <- factor(res.list[[i]]$gene, levels = res.list[[i]]$gene[order(res.list[[i]]$estimate)])
+  
+ if(nrow(res.list[[i]]) > 0) {
+   p <- ggplot(res.list[[i]], aes(x = gene, y = estimate)) + 
+    geom_point(size = 3) +
+    theme_bw() +
+    theme(
+      axis.text.x = element_text(angle = -90, hjust = 0, vjust = 0.5, size = 12),
+      plot.title = element_text(hjust = 0.5, size = 12),
+      legend.position = "none",
+      axis.title.x = element_blank(),
+        ) +
+    labs(title = plot.name.list[[i]], y = expression(paste(log[2], " fold change")))
+  
+   plot.list[[i]] = p
+ }
+   sig.genes <- c(as.numeric(as.character(res.list[[i]]$gene)), sig.genes)
+}
+
+# results: 
+length(unique(sig.genes))  #0
+
+# DESeq2 functions ####
+ps.fun <- phyloseq(otu_table(decontam_counts_nocontrols, 
+                         taxa_are_rows = T), 
+               sample_data(metadata.nocontrols),
+               tax_table(fun.gene))
+
+ps.fun <- tax_glom(ps.fun, taxrank = "COG20_FUNCTION")
+
+treat.fun <- phyloseq_to_deseq2(ps.fun, ~ plant.water) # but this imput shouldnt be rarefied omg im so annoyed 
+
+dds.pw.fun <- DESeq(treat.fun)
+
+#resultsNames(dds.pw.fun) #gives us comparisons for our contrasts
+
+alpha = 0.05
+res.list <- list()
+plot.list <- list()
+sig.genes <- c()
+
+for(i in contrasts) {
+  #get results for each contrast
+  res <- results(dds.pw.fun, contrast = contrast.list[[i]], pAdjustMethod = "BH")
+  #filter results by p-value
+  res.alpha <- res[which(res$padj < alpha), ]
+  #tidy results 
+  res.list[[i]] <- tidy(res.alpha)
+
+ res.list[[i]]$gene <- factor(res.list[[i]]$gene, levels = res.list[[i]]$gene[order(res.list[[i]]$estimate)])
+  
+ if(nrow(res.list[[i]]) > 0) {
+   p <- ggplot(res.list[[i]], aes(x = gene, y = estimate)) + 
+    geom_point(size = 3) +
+    theme_bw() +
+    theme(
+      axis.text.x = element_text(angle = -90, hjust = 0, vjust = 0.5, size = 12),
+      plot.title = element_text(hjust = 0.5, size = 12),
+      legend.position = "none",
+      axis.title.x = element_blank(),
+        ) +
+    labs(title = plot.name.list[[i]], y = expression(paste(log[2], " fold change")))
+  
+   plot.list[[i]] = p
+ }
+   sig.genes <- c(as.numeric(as.character(res.list[[i]]$gene)), sig.genes)
+}
+
+
+# results: 
+length(unique(sig.genes)) #44
+
+names(plot.list)
+
+test <- rbind(data.frame(cbind(pair = "MD.FC", res.list[["MD.FC"]])), data.frame(cbind(pair = "MD.FD", res.list[["MD.FD"]])), data.frame(cbind(pair = "FMW.FC", res.list[["MW.FC"]])), data.frame(cbind(pair = "MC.FC", res.list[["MC.FC"]])))
+
+
+write.csv(test, "Data/fun-gene-DEG.csv", row.names = F)
+
+#plot results
+grid.arrange(plot.list[[1]], plot.list[[2]], plot.list[[3]], plot.list[[4]], ncol = 2)
+
+test2 <- as.data.frame(cbind(fun.gene, gene = row.names(fun.gene)))
+
+for(i in names(res.list)) {
+ res.list[[i]] <- merge(res.list[[i]], test2, by = "gene", all.y = F)
+}
+
+sig.dif.fun <- list()
+
+for(i in names(res.list)) {
+  if(nrow(res.list[[i]]) > 0) {
+  sig.dif.fun[[i]] <- ddply(res.list[[i]], .(COG20_CATEGORY), summarize, estimate = sum(estimate))
+  }
+}
+
+plot.list2 <- list()
+
+for(i in names(sig.dif.fun)){
+    
+    sig.dif.fun[[i]]$COG20_CATEGORY <- factor(sig.dif.fun[[i]]$COG20_CATEGORY, levels = sig.dif.fun[[i]]$COG20_CATEGORY[order(sig.dif.fun[[i]]$estimate)])
+    
+    p <- ggplot(sig.dif.fun[[i]], aes(x = COG20_CATEGORY, y = estimate)) + 
+      geom_point(size = 2) +
+      geom_hline(yintercept = 0, col= "red") +
+      theme_bw() +
+      theme(
+        axis.text = element_text(size = 12),
+        plot.title = element_text(hjust = 0.5, size = 12.25),
+        legend.position = "none",
+        axis.title.y = element_blank(),
+        axis.title.x = element_text(size = 12)
+          ) +
+      ylim(-2,1.7) +
+      labs(title = plot.name.list[[i]], y = expression(paste(log[2], " fold change"))) +
+      scale_x_discrete(labels = c("Posttranslational modification, protein turnover, chaperones" = "Posttranslational modification, protein\nturnover, chaperones", "Intracellular trafficking, secretion, and vesicular transport" = "Intracellular trafficking, secretion, and\nvesicular transport")) +
+      coord_flip()
+  
+   plot.list2[[i]] = p
+}
+
+plot.list2 <- align_plots(plot.list2[[1]], plot.list2[[3]], plot.list2[[2]], plot.list2[[4]], align = "v")
+
+#fun.fig <- grid.arrange(plot.list2[[1]], arrangeGrob(plot.list2[[2]], plot.list2[[3]], plot.list2[[4]]), ncol = 2)
+
+fun.fig <- ggarrange(plot.list2[[1]], ggarrange(plot.list2[[2]], plot.list2[[3]], plot.list2[[4]], ncol = 1, labels = c("(b)", "(c)", "(d)")), ncol = 2, labels = "(a)")
+
+ggsave("Figures/deseq-fun.jpeg", fun.fig, height = 6, width = 11.75, units = "in", dpi = 600)
+
+# DESeq2 taxa ####
+ps.genus <- phyloseq(otu_table(decontam_counts_nocontrols, 
+                         taxa_are_rows = T), 
+               sample_data(metadata.nocontrols),
+               tax_table(tax.gene))
+
+ps.genus <- tax_glom(ps.genus, taxrank = "Genus")
+
+treat.genus <- phyloseq_to_deseq2(ps.genus, ~ plant.water)
+
+dds.pw.genus <- DESeq(treat.genus)
+
+alpha = 0.05
+res.list <- list()
+plot.list <- list()
+sig.genes <- c()
+
+for(i in contrasts) {
+  #get results for each contrast
+  res <- results(dds.pw.genus, contrast = contrast.list[[i]], pAdjustMethod = "BH")
+  #filter results by p-value
+  res.alpha <- res[which(res$padj < alpha), ]
+  #tidy results 
+  res.list[[i]] <- tidy(res.alpha)
+
+ res.list[[i]]$gene <- factor(res.list[[i]]$gene, levels = res.list[[i]]$gene[order(res.list[[i]]$estimate)])
+  
+ if(nrow(res.list[[i]]) > 0) {
+   p <- ggplot(res.list[[i]], aes(x = gene, y = estimate)) + 
+    geom_point(size = 3) +
+    theme_bw() +
+    theme(
+      axis.text.x = element_text(angle = -90, hjust = 0, vjust = 0.5, size = 12),
+      plot.title = element_text(hjust = 0.5, size = 12),
+      legend.position = "none",
+      axis.title.x = element_blank(),
+        ) +
+    labs(title = plot.name.list[[i]], y = expression(paste(log[2], " fold change")))
+  
+   plot.list[[i]] = p
+ }
+   sig.genes <- c(as.numeric(as.character(res.list[[i]]$gene)), sig.genes)
+}
+
+# results: 
+length(unique(sig.genes)) # 41
+
+#plot results
+grid.arrange(plot.list[[1]], plot.list[[2]], plot.list[[3]])
+
+
+test2 <- as.data.frame(cbind(tax.gene, gene = row.names(tax.gene)))
+
+for(i in names(res.list)) {
+ res.list[[i]] <- merge(res.list[[i]], test2, by = "gene", all.y = F)
+}
+
+sig.dif.tax <- list()
+
+for(i in names(res.list)) {
+  if(nrow(res.list[[i]]) > 0) {
+  sig.dif.tax[[i]] <- ddply(res.list[[i]], .(Family), summarize, estimate = sum(estimate))
+  }
+}
+
+plot.list2 <- list()
+
+for(i in names(sig.dif.tax)){
+    
+    sig.dif.tax[[i]]$Family <- factor(sig.dif.tax[[i]]$Family, levels = sig.dif.tax[[i]]$Family[order(sig.dif.tax[[i]]$estimate)])
+    
+    p <- ggplot(sig.dif.tax[[i]], aes(x = Family, y = estimate)) + 
+      geom_point(size = 2.5) +
+      geom_hline(yintercept = 0, col= "red") +
+      theme_bw() +
+      theme(
+        axis.text = element_text(size = 15),
+        plot.title = element_text(hjust = 0.5, size = 15),
+        legend.position = "none",
+        axis.title.y = element_blank(),
+        axis.title.x = element_text(size = 15)
+          ) +
+      ylim(-2.3, 5.5) +
+      labs(title = plot.name.list[[i]], y = expression(paste(log[2], " fold change"))) +
+      coord_flip()
+  
+   plot.list2[[i]] = p
+}
+
+plot.list2 <- align_plots(plot.list2[[1]], plot.list2[[2]], plot.list2[[3]], align = "v")
+
+tax.fig <- ggarrange(plot.list2[[1]], plot.list2[[2]], plot.list2[[3]], heights = c(1,0.4,0.72), labels = c("(a)", "(b)", "(c)"), ncol = 1)
+
+ggsave("Figures/deseq-tax.jpeg", tax.fig, height = 12, width = 7, units = "in", dpi = 600)
+
+# 
+# df <- data.frame()
+# 
+# for(i in names(plot.list)){ #plot list is the one with all the significantly different ones
+#   tmp <- cbind(pair = i, res.list[[i]])
+#   df <- rbind(df, tmp)
+# }
+# 
+# test2 <- as.data.frame(cbind(tax.gene, gene = row.names(tax.gene)))
+# 
+# df <- merge(df, test2, by = "gene", all.y = F)
+# 
+# write.csv(df, "Data/tax-gene-DEG.csv")
+
+# Rarefy and agglomerate ####
+ps <- phyloseq(otu_table(decontam_counts_nocontrols, 
+                         taxa_are_rows = T), 
+               sample_data(metadata.nocontrols))
+## Look at library size
+df <- as.data.frame(sample_data(ps.fun)) # Put sample_data into a ggplot-friendly data.frame
+df$LibrarySize <- sample_sums(ps.fun)
+df <- df[order(df$LibrarySize),]
+df$Index <- seq(nrow(df))
+
+#plot library size with line at 25000 reads
+ggplot(data=df, aes(x=Index, y=LibrarySize, color=plant.water)) + 
+  #geom_point() + 
+  geom_hline(yintercept = 25000, linetype="dashed") + 
+  theme(text = element_text(size=18)) +
+  geom_text(aes(label = SampleNumber))
+
+summary(df$LibrarySize)
+
+# Given that median is 10000, first qu. is ~4800, nice breaks around ~2000 or 4000 reads 
+hist(df$LibrarySize, breaks = 50) #right skewed 
+
+#which samples do we lose?
+as_tibble(df) %>% filter(LibrarySize < 2000) %>%
+  group_by(Location, Rel.Res, Wild.Captive) %>%
+  tally() #lose a lot of captive sus
+
+#log10(1) = 0, log10(10) = 1, log10(100) = 2, log10(1000) = 3, so rarefy at 1000 line would be:
+ggplot(data=df, aes(x=log10(LibrarySize), fill=Wild.Captive)) + geom_histogram(binwidth  =1, position= "dodge", col="black") + theme(text = element_text(size=18))  + ylab("Frequency of samples") + xlab(expression(paste("lo", g[10]," transformed read counts")))+scale_x_continuous(breaks=c(0,1,2,3,4,5)) + geom_vline(xintercept = 3.5, linetype="solid", col="#EF7F4FFF", size =2)
+
+
+
+
+# dropping the smallest sample (library size of 35618) GLM 260
+ps.rare66880 <- rarefy_even_depth(ps.fun, sample.size = 66880, replace = FALSE, rngseed = 5311) 
+
+ps.fun.rare66 <- ps.rare66880
+tax_table(ps.fun.rare66) <- fun.gene
+ps.fun.rare66 <- tax_glom(ps.fun.rare66, taxrank = "COG20_FUNCTION")
+
+ps.genus.rare66 <- ps.rare66880
+tax_table(ps.genus.rare66) <- tax.gene
+ps.genus.rare66 <- tax_glom(ps.genus.rare66, taxrank = "Genus")
+
+saveRDS(ps.rare66880, "Data/Data-Processing/ps-nocontrols-rare-66880.RDS")
+saveRDS(ps.fun.rare66, "Data/Data-Processing/ps-nocontrols-rare-66880-fun.RDS")
+saveRDS(ps.genus.rare66, "Data/Data-Processing/ps-nocontrols-rare-66880-tax.RDS")
+
+# Ordination - genes ####
+###Stats ####
+#norm_counts <- counts(dds.pw, normalized = T)
+
+#ps <- phyloseq(otu_table(norm_counts, taxa_are_rows = T), sample_data(metadata.nocontrols))
+
+# ps.hell <- transform(ps.rare81000, "hellinger")
+# 
+# PCoA_hell <- ordinate(physeq = ps.hell, method = "PCoA", distance = "euclidean")
+PCoA_bray <- ordinate(physeq = ps.rare81000, method = "PCoA", distance = "bray")
+
+# Get distances for stats
+#Dist.hell <- phyloseq::distance(ps.hell, method = "euclidean", type = "samples")
+Dist.bray <- phyloseq::distance(ps.rare81000, method = "bray", type = "samples")
+
+set.seed(620)
+adonis2(Dist.bray ~ WaterTrt * PlantTrt + Plot, as(sample_data(ps.rare81000), "data.frame"), by = "margin", permutations = 9999)
+
+set.seed(620)
+adonis2(Dist.bray ~ WaterTrt + PlantTrt + Plot, as(sample_data(ps.rare81000), "data.frame"), by = "margin", permutations = 9999)
+
+# #bpart <- beta.pair.abund(Dist.hell, index.family = "bray")
+# 
+# # set.seed(620)
+# # adonis2(bpart$beta.bray.gra ~ WaterTrt * PlantTrt + Plot, as(sample_data(ps.hell), "data.frame"), by = "margin", permutations = 9999)  #nestedness
+# 
+# # set.seed(620)
+# # adonis2(bpart$beta.bray.bal ~ WaterTrt * PlantTrt + Plot, as(sample_data(ps.hell), "data.frame"), by = "margin", permutations = 9999) # turnover
+# 
+# set.seed(620)
+# adonis2(Dist.hell ~ WaterTrt * PlantTrt + Plot, as(sample_data(ps.hell), "data.frame"), by = "margin", permutations = 9999)
+# 
+# # set.seed(620)
+# # adonis2(bpart$beta.bray.gra ~ WaterTrt + PlantTrt + Plot, as(sample_data(ps.hell), "data.frame"), by = "margin", permutations = 9999) # nestedness
+# 
+# # set.seed(620)
+# # adonis2(bpart$beta.bray.bal ~ WaterTrt + PlantTrt + Plot, as(sample_data(ps.hell), "data.frame"), by = "margin", permutations = 9999) #turnover
+# # # signficant turnover between watering treatments
+# 
+# set.seed(620)
+# adonis2(Dist.hell ~ WaterTrt + PlotSubTreatment + Plot, as(sample_data(ps.hell), "data.frame"), by = "margin", permutations = 9999)
+# 
+# C <- betadisper(Dist.hell, as(sample_data(ps.hell), "data.frame")$plant.water)
+# 
+# set.seed(50)
+# permutest(C, permutations = 9999) # no sig dif
+# 
+# C <- betadisper(Dist.hell, as(sample_data(ps.hell), "data.frame")$PlantTrt)
+# 
+# set.seed(50)
+# permutest(C, permutations = 9999) # no sig dif
+# 
+# C <- betadisper(Dist.hell, as(sample_data(ps.hell), "data.frame")$WaterTrt)
+# 
+# set.seed(50)
+# permutest(C, permutations = 9999) # no sig dif
+# 
+# pairwise <- permanova_pairwise(
+#   Dist.hell,
+#   as(sample_data(ps.hell), "data.frame")$WaterTrt,
+#   permutations = 9999,
+#   padj = "BH"
+# )
+# 
+# pairwise <- permanova_pairwise(
+#   Dist.hell,
+#   as(sample_data(ps.hell), "data.frame")$PlantTrt,
+#   permutations = 9999,
+#   padj = "BH"
+# )
 
 ### Figure ####
-plot_ordination(ps.hell, PCoA_hell, color = "PlantTrt") +
-  theme_classic(base_size = 10) +
-  theme(
-     panel.border = element_rect(colour = "black", fill = NA, size = 1)) +
-  geom_point(size = 2) +
-  stat_ellipse() +
-  facet_wrap(~WaterTrt) + 
-  scale_color_manual(values = c("magenta4", "#1F968BFF", "goldenrod3"))
-
-plot_ordination(ps.hell, PCoA_hell, color = "WaterTrt") +
-  theme_classic(base_size = 15) +
-  theme(
-     panel.border = element_rect(colour = "black", fill = NA, size = 1)) +
-  geom_point(size = 2) +
-  stat_ellipse() +
-  facet_wrap(~PlantTrt) + 
-  scale_color_manual(values = c("red", "black", "blue"))
-
-
 # differences between watering treatments
 a <- plot_ordination(ps.hell, PCoA_hell, color = "WaterTrt") +
   theme_classic(base_size = 10) +
@@ -217,6 +629,18 @@ a <- plot_ordination(ps.hell, PCoA_hell, color = "WaterTrt") +
   stat_ellipse() +
   scale_color_manual(values = c("red", "black", "blue")) +
   labs(x = "PCoA1 (10.9%)", y = "PCoA2 (7.4%)")
+
+plot_ordination(ps.rare81000, PCoA_bray, color = "WaterTrt") +
+  theme_classic(base_size = 10) +
+  theme(
+     #panel.border = element_rect(colour = "black", fill = NA, size = 1),
+     legend.position = c(0.8,0.15),
+     legend.title = element_blank(),
+    legend.box.margin = margin(-1,-1,-1,-1),
+     legend.margin = margin(-3,-3,-3,-3)) +
+  geom_point(size = 2) +
+  stat_ellipse() +
+  scale_color_manual(values = c("red", "black", "blue")) 
 
 # differences between plant treatments
 b <- plot_ordination(ps.hell, PCoA_hell, color = "PlantTrt") +
@@ -311,48 +735,60 @@ d <- grid.arrange(a,b,c, ncol = 3)
 
 ggsave("Figures/Ordination.jpeg", d, height = 4, width = 15, units = "in", dpi = 600)
 
-###Stats ####
-# Get distances for stats
-Dist.hell <- phyloseq::distance(ps.hell, method = "euclidean", type = "samples")
+# Ordination - function ####
+### Stats ####
 
-set.seed(50)
+# ps.hell.fun <- transform(ps.fun.rare, "hellinger")
+# 
+# PCoA_hell <- ordinate(physeq = ps.hell.fun, method = "PCoA", distance = "euclidean")
+PCoA_bray <- ordinate(physeq = ps.fun.rare66, method = "PCoA", distance = "bray")
 
-adonis2(Dist.hell ~ WaterTrt * PlantTrt, as(sample_data(ps.hell), "data.frame"), by = "margin", permutations = 9999)  # interaction not significant
+#Dist.hell.fun <- phyloseq::distance(ps.hell.fun, method = "euclidean", type = "samples")
+Dist.fun <- phyloseq::distance(ps.fun.rare66, method = "bray", type = "samples")
 
-adonis2(Dist.hell ~ PlantTrt + WaterTrt, as(sample_data(ps.hell), "data.frame"), by = "margin", permutations = 9999) 
+#bpart <- beta.pair.abund(Dist.hell.fun, index.family = "bray")
 
-C <- betadisper(Dist.hell, as(sample_data(ps.hell), "data.frame")$plant.water)
-
-set.seed(50)
-permutest(C, permutations = 9999) # no sig dif
-
-C <- betadisper(Dist.hell, as(sample_data(ps.hell), "data.frame")$PlantTrt)
-
-set.seed(50)
-permutest(C, permutations = 9999) # no sig dif
-
-C <- betadisper(Dist.hell, as(sample_data(ps.hell), "data.frame")$WaterTrt)
-
-set.seed(50)
-permutest(C, permutations = 9999) # no sig dif
-
-pairwise <- permanova_pairwise(
-  Dist.hell,
-  as(sample_data(ps.hell), "data.frame")$WaterTrt,
-  permutations = 9999,
-  padj = "BH"
-)
+set.seed(620)
+adonis2(Dist.fun ~ WaterTrt * PlantTrt + Plot, as(sample_data(ps.fun.rare66), "data.frame"), by = "margin", permutations = 9999)  
 
 
-## Taxa ####
-ps.taxa <- tax_glom(ps, taxrank = "Genus")
+# set.seed(620)
+# (adon.nest <- adonis2(bpart$beta.bray.gra ~ WaterTrt * PlantTrt + Plot, as(sample_data(ps.hell), "data.frame"), by = "margin", permutations = 9999))  #nestedness
+ 
+# set.seed(620)
+# (adon.turn <- adonis2(bpart$beta.bray.bal ~ WaterTrt * PlantTrt + Plot, as(sample_data(ps.hell), "data.frame"), by = "margin", permutations = 9999)) # turnover
 
-ps.hell.taxa <- transform(ps.taxa, "hellinger")
+set.seed(620)
+adonis2(Dist.fun ~ WaterTrt + PlantTrt + Plot, as(sample_data(ps.fun.rare66), "data.frame"), by = "margin", permutations = 9999)
+
+# set.seed(620)
+# adonis2(bpart$beta.bray.gra ~ WaterTrt + PlantTrt + Plot, as(sample_data(ps.hell), "data.frame"), by = "margin", permutations = 9999) #nestedness
+# 
+# set.seed(620)
+# adonis2(bpart$beta.bray.bal ~ WaterTrt + PlantTrt + Plot, as(sample_data(ps.hell), "data.frame"), by = "margin", permutations = 9999) # turnover
+# # significant turnover in beta diversity between watering treatmnets, marginally signficant turnover between plant host treatments
+
+# set.seed(620)
+# pairwise <- permanova_pairwise(
+#   Dist.hell.fun,
+#   as(sample_data(ps.hell.fun), "data.frame")$WaterTrt,
+#   permutations = 9999,
+#   padj = "BH"
+# )
+# 
+# set.seed(620)
+# pairwise <- permanova_pairwise(
+#   Dist.hell.fun,
+#   as(sample_data(ps.hell.fun), "data.frame")$PlantTrt,
+#   permutations = 9999,
+#   padj = "BH"
+# )
 
 ### Figure ####
-PCoA_hell.taxa <- ordinate(physeq = ps.hell.taxa, method = "PCoA", distance = "euclidean")
+PCoA_hell.fun <- ordinate(physeq = ps.hell.fun, method = "PCoA", distance = "euclidean")
+PCoA_bray.fun <- ordinate(physeq = ps.fun.rare, method = "PCoA", distance = "bray")
 
-plot_ordination(ps.hell.taxa, PCoA_hell.taxa, color = "PlantTrt") +
+plot_ordination(ps.fun.rare, PCoA_bray.fun, color = "PlantTrt") +
   theme_classic(base_size = 10) +
   theme(
      panel.border = element_rect(colour = "black", fill = NA, size = 1)) +
@@ -361,36 +797,250 @@ plot_ordination(ps.hell.taxa, PCoA_hell.taxa, color = "PlantTrt") +
   facet_wrap(~WaterTrt) + 
   scale_color_manual(values = c("magenta4", "#1F968BFF", "goldenrod3"))
 
+# differences between watering treatments
+a <- plot_ordination(ps.fun.rare, PCoA_bray.fun, color = "WaterTrt") +
+  theme_classic(base_size = 10) +
+  theme(
+     #panel.border = element_rect(colour = "black", fill = NA, size = 1),
+     legend.position = c(0.87,0.9),
+     legend.title = element_blank(),
+    legend.box.margin = margin(-1,-1,-1,-1),
+     legend.margin = margin(-3,-3,-3,-3),
+    legend.text = element_text(size = 14),
+     axis.text = element_text(size = 17),
+     axis.title = element_text(size = 18)) +
+  geom_point(size = 3) +
+  lims(x = c(-0.18, 0.2)) +
+  stat_ellipse() +
+  scale_color_manual(values = c("red", "black", "blue")) +
+  labs(x = "PCoA1 (21.2%)", y = "PCoA2 (11.4%)")
+
+# differences between plant treatments
+b <- plot_ordination(ps.hell.fun, PCoA_hell.fun, color = "PlantTrt") +
+  theme_classic(base_size = 10) +
+  theme(
+    #panel.border = element_rect(colour = "black", fill = NA, size = 1),
+    legend.position = c(0.87,0.9),
+    legend.title = element_blank(),
+    legend.box.margin = margin(-1,-1,-1,-1),
+    legend.margin = margin(-3,-3,-3,-3),
+    legend.text = element_text(size = 14),
+     axis.text = element_text(size = 17),
+     axis.title = element_text(size = 18)) +
+  lims(x = c(-0.18, 0.2)) +
+  geom_point(size = 3) +
+  stat_ellipse() +
+  scale_color_manual(values = c("magenta4", "#1F968BFF", "goldenrod3")) +
+  labs(x = "PCoA1 (21.2%)", y = "PCoA2 (11.4%)")
+
+# get centroids plots
+C <- betadisper(Dist.hell.fun, as(sample_data(ps.hell.fun), "data.frame")$plant.water)
+
+test <- data.frame(Category=rownames(C$centroids[,1:2]), C$centroids[,1:2])
+
+forb <- test$Category[1:3]
+grass <- test$Category[4:6]
+drought <- test$Category[c(2,5,8)]
+water <- test$Category[c(3,6,9)]
+# 
+# test$PlantTrt <- ifelse(test$Category %in% forb, "natives", ifelse(test$Category %in% grass, "invasives", "mix"))
+# 
+# test$WaterTrt <- ifelse(test$Category %in% drought, "drought", ifelse(test$Category %in% water, "watered", "control"))
+
+my.plot <- gg_ordiplot(C, groups = as(sample_data(ps.hell.fun), "data.frame")$plant.water, pt.size = 0, kind = "se") 
+
+my.plot$df_mean.ord$PlantTrt <- ifelse(my.plot$df_mean.ord$Group %in% forb, "natives", ifelse(my.plot$df_mean.ord$Group %in% grass, "invasives", "mix"))
+
+my.plot$df_mean.ord$PlantTrt <- factor(my.plot$df_mean.ord$PlantTrt, levels = c("natives", "invasives", "mix"))
+
+my.plot$df_mean.ord$WaterTrt <- ifelse(my.plot$df_mean.ord$Group %in% drought, "drought", ifelse(my.plot$df_mean.ord$Group %in% water, "watered", "control"))
+
+my.plot$df_mean.ord$WaterTrt <- factor(my.plot$df_mean.ord$WaterTrt, levels = c("drought", "control", "watered"))
+
+my.plot$df_ellipse$PlantTrt <- ifelse(my.plot$df_ellipse$Group %in% forb, "natives", ifelse(my.plot$df_ellipse$Group %in% grass, "invasives", "mix"))
+
+my.plot$df_ellipse$PlantTrt <- factor(my.plot$df_ellipse$PlantTrt, levels = c("natives", "invasives", "mix"))
+
+my.plot$df_ellipse$WaterTrt <- ifelse(my.plot$df_ellipse$Group %in% drought, "drought", ifelse(my.plot$df_ellipse$Group %in% water, "watered", "control"))
+
+my.plot$df_ellipse$WaterTrt <- factor(my.plot$df_ellipse$WaterTrt, levels = c("drought", "control", "watered"))
+
+c <- ggplot(my.plot$df_mean.ord, aes(x = x, y = y, col = WaterTrt, shape = PlantTrt)) +
+  geom_point(data = my.plot$df_ord, mapping = aes(x = x, y = y), col = "lightgrey", size = 3, inherit.aes = F) +
+  geom_point(size = 3.5) +
+  geom_path(data = my.plot$df_ellipse, aes(x = x, y = y), show.legend = FALSE) +
+  scale_color_manual(values = c("red", "black", "blue")) +
+  theme_classic(base_size = 10) +
+  theme(
+     legend.box = "horizontal",
+     #panel.border = element_rect(colour = "black", fill = NA, size = 1),
+     legend.position = c(0.7,0.9),
+     legend.title = element_blank(),
+     legend.box.margin = margin(-1,-1,-1,-1),
+     legend.margin = margin(-3,-3,-3,-3),
+     legend.text = element_text(size = 14),
+     axis.text = element_text(size = 17),
+     axis.title = element_text(size = 18)) +
+  labs(x = "PCoA1 (21.2%)", y = "PCoA2 (11.4%)")
+
+d <- ggarrange(a,b,c, ncol = 3, labels = c("(a)", "(b)", "(c)"))
+
+ggsave("Figures/Ordination-fun.jpeg", d, height = 4, width = 15, units = "in", dpi = 600)
+
+# Ordination - Taxa ####
+# ps.hell.taxa <- transform(ps.genus.rare, "hellinger")
+# 
+# PCoA_hell <- ordinate(physeq = ps.hell.taxa, method = "PCoA", distance = "euclidean")
+# PCoA_bray <- ordinate(physeq = ps.genus.rare, method = "PCoA", distance = "bray")
+# 
+# Dist.hell.taxa <- phyloseq::distance(ps.hell.taxa, method = "euclidean", type = "samples")
+Dist.taxa <- phyloseq::distance(ps.genus.rare66, method = "bray", type = "samples")
+
 ### Stats ####
-Dist.hell.taxa <- phyloseq::distance(ps.hell.taxa, method = "euclidean", type = "samples")
 
-set.seed(50)
+#bpart <- beta.pair.abund(Dist.hell.taxa, index.family = "bray")
 
-adonis2(Dist.hell.taxa ~ WaterTrt * PlantTrt, as(sample_data(ps.hell.taxa), "data.frame"), by = "margin", permutations = 9999)  # interaction not significant
+set.seed(620)
+adonis2(Dist.taxa ~ WaterTrt * PlantTrt + Plot, as(sample_data(ps.genus.rare66), "data.frame"), by = "margin", permutations = 9999)
 
-adonis2(Dist.hell.taxa ~ WaterTrt + PlantTrt, as(sample_data(ps.hell.taxa), "data.frame"), by = "margin", permutations = 9999) # both watering and plant treatment sig
+# set.seed(620)
+# adonis2(bpart$beta.bray.gra ~ WaterTrt * PlantTrt + Plot, as(sample_data(ps.hell), "data.frame"), by = "margin", permutations = 9999) #nestedness
+# 
+# set.seed(620)
+# adonis2(bpart$beta.bray.bal ~ WaterTrt * PlantTrt + Plot, as(sample_data(ps.hell), "data.frame"), by = "margin", permutations = 9999) #turnover
+# # marginally sig interaction effect on turnover between taxonomic differences
 
-pairwise <- permanova_pairwise(
-  Dist.hell.taxa,
-  as(sample_data(ps.hell.taxa), "data.frame")$PlantTrt,
-  permutations = 9999,
-  padj = "BH"
-)
+set.seed(620)
+adonis2(Dist.taxa ~ WaterTrt + PlantTrt + Plot, as(sample_data(ps.genus.rare66), "data.frame"), by = "margin", permutations = 9999)
 
-pairwise <- permanova_pairwise(
-  Dist.hell.taxa,
-  as(sample_data(ps.hell.taxa), "data.frame")$WaterTrt,
-  permutations = 9999,
-  padj = "BH"
-)
+# set.seed(620)
+# adonis2(bpart$beta.bray.gra ~ WaterTrt + PlantTrt + Plot, as(sample_data(ps.hell), "data.frame"), by = "margin", permutations = 9999) # nestedness
+# 
+# set.seed(620)
+# adonis2(bpart$beta.bray.bal ~ WaterTrt + PlantTrt + Plot, as(sample_data(ps.hell), "data.frame"), by = "margin", permutations = 9999) #turnover
+# 
+# set.seed(620)
+# pairwise <- permanova_pairwise(
+#   bpart$beta.bray.bal,
+#   as(sample_data(ps.hell.taxa), "data.frame")$plant.water,
+#   permutations = 9999,
+#   padj = "BH"
+# )
+# 
+# set.seed(620)
+# pairwise <- permanova_pairwise(
+#   Dist.hell.taxa,
+#   as(sample_data(ps.hell.taxa), "data.frame")$PlantTrt,
+#   permutations = 9999,
+#   padj = "BH"
+# )
 
-## Forb Treatments ####
-### Forbs ####
-ps.hell.forb <- prune_samples(sample_data(ps.hell)$PlotSubTreatmentName == "forb mix 1" | sample_data(ps.hell)$PlotSubTreatmentName == "forb mix 2", ps.hell)
+### Figure ####
+#PCoA_hell.taxa <- ordinate(physeq = ps.hell.taxa, method = "PCoA", distance = "euclidean")
+PCoA_bray.taxa <- ordinate(physeq = ps.genus.rare66, method = "PCoA", distance = "bray")
 
-PCoA_hell_forb <- ordinate(physeq = ps.hell.forb, method = "PCoA", distance = "euclidean")
+# differences between watering treatments
+a <- plot_ordination(ps.genus.rare66, PCoA_bray.taxa, color = "WaterTrt") +
+  theme_classic(base_size = 10) +
+  theme(
+     #panel.border = element_rect(colour = "black", fill = NA, size = 1),
+     legend.position = c(0.87,0.9),
+     legend.title = element_blank(),
+    legend.box.margin = margin(-1,-1,-1,-1),
+     legend.margin = margin(-3,-3,-3,-3),
+    legend.text = element_text(size = 14),
+     axis.text = element_text(size = 17),
+     axis.title = element_text(size = 18)) +
+  geom_point(size = 3) +
+  lims(x = c(-0.3, 0.25)) +
+  stat_ellipse() +
+  scale_color_manual(values = c("red", "black", "blue")) +
+  labs(x = "PCoA1 (28.7%)", y = "PCoA2 (22.6%)")
 
-plot_ordination(ps.hell.forb, PCoA_hell_forb, color = "PlotSubTreatmentName", shape = "PlotSubTreatmentName") +
+# differences between plant treatments
+b <- plot_ordination(ps.hell.taxa, PCoA_hell.taxa, color = "PlantTrt") +
+  theme_classic(base_size = 10) +
+  theme(
+    #panel.border = element_rect(colour = "black", fill = NA, size = 1),
+    legend.position = c(0.15,0.9),
+    legend.title = element_blank(),
+    legend.box.margin = margin(-1,-1,-1,-1),
+    legend.margin = margin(-3,-3,-3,-3),
+    legend.text = element_text(size = 14),
+     axis.text = element_text(size = 17),
+     axis.title = element_text(size = 18)) +
+  lims(x = c(-0.3, 0.25)) +
+  geom_point(size = 3) +
+  stat_ellipse() +
+  scale_color_manual(values = c("magenta4", "#1F968BFF", "goldenrod3")) +
+  labs(x = "PCoA1 (28.7%)", y = "PCoA2 (22.6%)")
+
+# get centroids plots
+C <- betadisper(Dist.hell.taxa, as(sample_data(ps.hell.taxa), "data.frame")$plant.water)
+
+test <- data.frame(Category=rownames(C$centroids[,1:2]), C$centroids[,1:2])
+
+forb <- test$Category[1:3]
+grass <- test$Category[4:6]
+drought <- test$Category[c(2,5,8)]
+water <- test$Category[c(3,6,9)]
+# 
+# test$PlantTrt <- ifelse(test$Category %in% forb, "natives", ifelse(test$Category %in% grass, "invasives", "mix"))
+# 
+# test$WaterTrt <- ifelse(test$Category %in% drought, "drought", ifelse(test$Category %in% water, "watered", "control"))
+
+my.plot <- gg_ordiplot(C, groups = as(sample_data(ps.hell.taxa), "data.frame")$plant.water, pt.size = 0, kind = "se") 
+
+my.plot$df_mean.ord$PlantTrt <- ifelse(my.plot$df_mean.ord$Group %in% forb, "natives", ifelse(my.plot$df_mean.ord$Group %in% grass, "invasives", "mix"))
+
+my.plot$df_mean.ord$PlantTrt <- factor(my.plot$df_mean.ord$PlantTrt, levels = c("natives", "invasives", "mix"))
+
+my.plot$df_mean.ord$WaterTrt <- ifelse(my.plot$df_mean.ord$Group %in% drought, "drought", ifelse(my.plot$df_mean.ord$Group %in% water, "watered", "control"))
+
+my.plot$df_mean.ord$WaterTrt <- factor(my.plot$df_mean.ord$WaterTrt, levels = c("drought", "control", "watered"))
+
+my.plot$df_ellipse$PlantTrt <- ifelse(my.plot$df_ellipse$Group %in% forb, "natives", ifelse(my.plot$df_ellipse$Group %in% grass, "invasives", "mix"))
+
+my.plot$df_ellipse$PlantTrt <- factor(my.plot$df_ellipse$PlantTrt, levels = c("natives", "invasives", "mix"))
+
+my.plot$df_ellipse$WaterTrt <- ifelse(my.plot$df_ellipse$Group %in% drought, "drought", ifelse(my.plot$df_ellipse$Group %in% water, "watered", "control"))
+
+my.plot$df_ellipse$WaterTrt <- factor(my.plot$df_ellipse$WaterTrt, levels = c("drought", "control", "watered"))
+
+c <- ggplot(my.plot$df_mean.ord, aes(x = x, y = y, col = WaterTrt, shape = PlantTrt)) +
+  geom_point(data = my.plot$df_ord, mapping = aes(x = x, y = y), col = "lightgrey", size = 3, inherit.aes = F) +
+  geom_point(size = 3.5) +
+  geom_path(data = my.plot$df_ellipse, aes(x = x, y = y), show.legend = FALSE) +
+  scale_color_manual(values = c("red", "black", "blue")) +
+  theme_classic(base_size = 10) +
+  theme(
+     legend.box = "horizontal",
+     #panel.border = element_rect(colour = "black", fill = NA, size = 1),
+     legend.position = c(0.7,0.9),
+     legend.title = element_blank(),
+     legend.box.margin = margin(-1,-1,-1,-1),
+     legend.margin = margin(-3,-3,-3,-3),
+     legend.text = element_text(size = 14),
+     axis.text = element_text(size = 17),
+     axis.title = element_text(size = 18)) +
+  labs(x = "PCoA1 (28.7%)", y = "PCoA2 (22.6%)")
+
+d <- ggarrange(a,b,c, ncol = 3, labels = c("(a)", "(b)", "(c)"))
+
+
+ggsave("Figures/Ordination-taxa.jpeg", d, height = 4, width = 15, units = "in", dpi = 600)
+
+# Ordination - Forbs ####
+### Forbs fun ####
+ps.forb <- prune_samples(sample_data(ps.fun.rare66)$PlotSubTreatmentName == "native mix 1" | sample_data(ps.fun.rare66)$PlotSubTreatmentName == "native mix 2", ps.fun.rare66)
+
+ps.forb <- prune_samples(sample_data(ps.forb)$SampleNumber !=  241, ps.forb)
+
+ps.forb <- prune_samples(sample_data(ps.forb)$SampleNumber !=  345, ps.forb)
+
+PCoA_forb <- ordinate(physeq = ps.forb, method = "PCoA", distance = "bray")
+
+plot_ordination(ps.forb, PCoA_forb, color = "PlotSubTreatmentName", shape = "PlotSubTreatmentName", label = "SampleNumber") +
   theme_classic(base_size = 15) +
   theme(
     legend.title = element_blank(),
@@ -399,14 +1049,14 @@ plot_ordination(ps.hell.forb, PCoA_hell_forb, color = "PlotSubTreatmentName", sh
   stat_ellipse()
 
  # Get distances for stats
-Dist.hell.forb <- phyloseq::distance(ps.hell.forb, method = "euclidean", type = "samples")
+Dist.forb <- phyloseq::distance(ps.forb, method = "bray", type = "samples")
 
-set.seed(50)
+set.seed(620)
 
-adonis2(Dist.hell.forb ~ PlotSubTreatmentName, as(sample_data(ps.hell.forb), "data.frame"), by = "margin", permutations = 9999) 
+adonis2(Dist.forb ~ WaterTrt + PlotSubTreatmentName + Plot, as(sample_data(ps.forb), "data.frame"), by = "margin", permutations = 9999) 
 
-### Mix ####
-ps.hell.mix <- prune_samples(sample_data(ps.hell)$PlotSubTreatmentName == "forb mix 1 + grasses" | sample_data(ps.hell)$PlotSubTreatmentName == "forb mix 2 + grasses", ps.hell)
+### Mix fun ####
+ps.hell.mix <- prune_samples(sample_data(ps.hell.fun)$PlotSubTreatmentName == "native mix 1 + invasives" | sample_data(ps.hell.fun)$PlotSubTreatmentName == "native mix 2 + invasives", ps.hell.fun)
 
 PCoA_hell_mix <- ordinate(physeq = ps.hell.mix, method = "PCoA", distance = "euclidean")
 
@@ -423,253 +1073,56 @@ plot_ordination(ps.hell.mix, PCoA_hell_mix, color = "PlotSubTreatmentName", shap
 # Get distances for stats
 Dist.hell.mix <- phyloseq::distance(ps.hell.mix, method = "euclidean", type = "samples")
 
-set.seed(50)
+set.seed(620)
+adonis2(Dist.hell.mix ~ WaterTrt + PlotSubTreatmentName + Plot, as(sample_data(ps.hell.mix), "data.frame"), by = "margin", permutations = 9999) 
 
-adonis2(Dist.hell.mix ~ PlotSubTreatmentName, as(sample_data(ps.hell.mix), "data.frame"), by = "margin", permutations = 9999) 
+### Forbs taxa ####
+ps.hell.forb <- prune_samples(sample_data(ps.hell.taxa)$PlotSubTreatmentName == "native mix 1" | sample_data(ps.hell.taxa)$PlotSubTreatmentName == "native mix 2", ps.hell.taxa)
 
-# Genetic alpha diversity ####
-GL_Alpha <- estimate_richness(ps.hell, measures = "Shannon")
+PCoA_hell_forb <- ordinate(physeq = ps.hell.forb, method = "PCoA", distance = "euclidean")
 
-GL_Alpha <- cbind(GL_Alpha, sample_data(ps.hell))
+plot_ordination(ps.hell.forb, PCoA_hell_forb, color = "PlotSubTreatmentName", shape = "PlotSubTreatmentName") +
+  theme_classic(base_size = 15) +
+  theme(
+    legend.title = element_blank(),
+    panel.border = element_rect(colour = "black", fill = NA, linewidth = 1)) +
+  geom_point(size = 2) +
+  stat_ellipse()
 
-set.seed(50)
-kruskal_test(Shannon ~ PlantTrt, distribution = approximate(nresample = 9999), data = GL_Alpha)
+ # Get distances for stats
+Dist.hell.forb <- phyloseq::distance(ps.hell.forb, method = "euclidean", type = "samples")
 
-kruskal_test(Shannon ~ WaterTrt, distribution = approximate(nresample = 9999), data = GL_Alpha)
+set.seed(620)
 
-shannon.sum <- ddply(GL_Alpha, .(PlantTrt, WaterTrt), summarise, max = max(Shannon))
+adonis2(Dist.hell.forb ~ WaterTrt + PlotSubTreatmentName + Plot, as(sample_data(ps.hell.forb), "data.frame"), by = "margin", permutations = 9999) 
 
-plot_richness(ps.hell, measures = "Shannon", x = "PlantTrt", color = "PlantTrt") + 
-  geom_boxplot(outlier.shape = NA) +
-  geom_jitter() +
-  theme_bw(base_size = 15) +
-  facet_wrap(~WaterTrt) + 
-  scale_color_manual(values = c("magenta4", "#1F968BFF", "goldenrod3"))
+### Mix taxa ####
+ps.hell.mix <- prune_samples(sample_data(ps.hell.taxa)$PlotSubTreatmentName == "native mix 1 + invasives" | sample_data(ps.hell.taxa)$PlotSubTreatmentName == "native mix 2 + invasives", ps.hell.taxa)
 
-# Sig Diff Genes ####
+PCoA_hell_mix <- ordinate(physeq = ps.hell.mix, method = "PCoA", distance = "euclidean")
 
-contrasts <- c("FC.FW", 
-               "FC.FD", 
-               "FC.MD", 
-               "FC.MW", 
-               "GC.GD", 
-               "GC.GW", 
-               "GC.MD",
-               "GC.MW",
-               "GC.FC", 
-               "GD.FD",
-               "GW.FW",
-               "FD.MD",
-               "FW.MW")
-
-# contrasts: name of factor, numerator for fold change, denominator for fold change; i.e. log2(forbs.Control/forb.Watering) so if something is higher in forb controls, the number is greater than one, so the log fold change > 0, if something is higher in the watering treatment then the number is less than one so the log2 fold change is negative
-
-
-contrast.list <- list(FC.FW = c("plant.water","forb.Control","forb.Watering"),
-                      FC.FD = c("plant.water","forb.Control","forb.Drought"),
-                      FC.MD = c("plant.water","forb.Control","mix.Drought"),
-                      FC.MW = c("plant.water","forb.Control","mix.Watering"),
-                      GC.GD = c("plant.water","grasses.Control","grasses.Drought"),
-                      GC.GW = c("plant.water","grasses.Control","grasses.Watering"),
-                      GC.MD = c("plant.water","grasses.Control","mix.Drought"),
-                      GC.MW = c("plant.water","grasses.Control","mix.Watering"),
-                      GC.FC = c("plant.water","grasses.Control","forb.Control"),
-                      GD.FD = c("plant.water","grasses.Drought","forb.Drought"),
-                      GW.FW = c("plant.water","grasses.Watering","forb.Watering"),
-                      FD.MD = c("plant.water","forb.Drought","mix.Drought"),
-                      FW.MW = c("plant.water", "forb.Watering", "mix.Watering"))
-
-plot.name.list <- list(FC.FW = "Forb Control v Forb Watering",
-                       FC.FD = "Forb Control v Forb Drought",
-                       FC.MD = "Forb Control v Mix Drought",
-                       FC.MW = "Forb Control v Mix Watering",
-                       GC.GD = "Grass Control v Grass Drought",
-                       GC.GW = "Grass Control v Grass Watering",
-                       GC.MD = "Grass Control v Mix Drought",
-                       GC.MW  = "Grass Control v Mix Watering",
-                       GC.FC = "Grass Control v Forb Control",
-                       GD.FD = "Grass Drought v Forb Drought",
-                       GW.FW = "Grass Watering v Forb Watering",
-                       FD.MD = "Forb Drought v Mix Drought",
-                       FW.MW = "Forb Watering v Mix Watering")
-
-alpha = 0.05
-res.list <- list()
-plot.list <- list()
-sig.genes <- c()
-
-for(i in contrasts) {
-  #get results for each contrast
-  res <- results(dds, contrast = contrast.list[[i]], pAdjustMethod = "BH")
-  #filter results by p-value
-  res.alpha <- res[which(res$padj < alpha), ]
-  #tidy results 
-  res.list[[i]] <- tidy(res.alpha)
-
- res.list[[i]]$gene <- factor(res.list[[i]]$gene, levels = res.list[[i]]$gene[order(res.list[[i]]$estimate)])
+plot_ordination(ps.hell.mix, PCoA_hell_mix, color = "PlotSubTreatmentName", shape = "PlotSubTreatmentName") +
+  theme_classic(base_size = 15) +
+  theme(
+    panel.border = element_rect(colour = "black", fill = NA, linewidth = 1),
+    legend.title = element_blank()
+  ) +
+  geom_point(size = 2) +
+  stat_ellipse()
   
- if(nrow(res.list[[i]]) > 0) {
-   p <- ggplot(res.list[[i]], aes(x = gene, y = estimate)) + 
-    geom_point(size = 3) +
-    theme_bw() +
-    theme(
-      axis.text.x = element_text(angle = -90, hjust = 0, vjust = 0.5, size = 12),
-      plot.title = element_text(hjust = 0.5, size = 12),
-      legend.position = "none",
-      axis.title.x = element_blank(),
-        ) +
-    labs(title = plot.name.list[[i]], y = expression(paste(log[2], " fold change")))
-  
-   plot.list[[i]] = p
- }
-   sig.genes <- c(as.numeric(as.character(res.list[[i]]$gene)), sig.genes)
-}
 
-# results: 
-length(unique(sig.genes))
-## BH: 20 unique genes
+# Get distances for stats
+Dist.hell.mix <- phyloseq::distance(ps.hell.mix, method = "euclidean", type = "samples")
 
-#plot results
-grid.arrange(plot.list[[1]], plot.list[[2]], plot.list[[3]], ncol = 3)
+set.seed(620)
 
-df <- data.frame()
+adonis2(Dist.hell.mix ~ WaterTrt + PlotSubTreatmentName + Plot, as(sample_data(ps.hell.mix), "data.frame"), by = "margin", permutations = 9999) 
 
-for(i in names(plot.list)){ #plot list is the one with all the significantly different ones
-  tmp <- cbind(pair = i, res.list[[i]])
-  df <- rbind(df, tmp)
-}
-
-nrow(df[df$pair == "FC.MD",]) #13
-nrow(df[df$pair == "FC.MW",]) #1
-nrow(df[df$pair == "FD.MD",]) #10
-
-# Functional analysis ####
-fun.gene.sig <- fun.gene[fun.gene$gene %in% sig.genes,] # 16 genes have functions!
-no.fun <- unique(sig.genes[!sig.genes %in% fun.gene$gene]) #4 have no discernible function
-
-write.csv(fun.gene.sig, "Data/Final-Data/20221205_fun-gene-cog-allsigs.csv", row.names = F)
-
-#Edited to reflect more streamlined COG categories
-fun.gene.cog <- read.csv("Data/Final-Data/20221205_fun-gene-cog-allsigs_ML-CE-Edit.csv")
-
-length(unique(fun.gene.cog$gene))
-
-unique(fun.gene.cog$Fun_Cat_CE_ML) # 13 unique functions yay!
-
-for(i in names(res.list)) {
- res.list[[i]] <- merge(res.list[[i]], fun.gene.cog[,c(1,2,14)], by = "gene")
-}
-
-sig.dif.fun <- list()
-
-for(i in names(res.list)) {
-  if(nrow(res.list[[i]]) > 0) {
-  sig.dif.fun[[i]] <- ddply(res.list[[i]], .(Fun_Cat_CE_ML), summarize, estimate = sum(estimate))
-  }
-}
-
-## Summed by Function ####
-
-names(sig.dif.fun)[[1]] <- "forbs (control) vs. mixes (drought)"
-names(sig.dif.fun)[[2]] <- "forbs (control) vs. mixes (watered)"
-names(sig.dif.fun)[[3]] <- "forbs (drought) vs. mixes (drought)"
-
-plot.list2 <- list()
-
-for(i in names(sig.dif.fun)){
-    
-    sig.dif.fun[[i]]$Fun_Cat_CE_ML <- factor(sig.dif.fun[[i]]$Fun_Cat_CE_ML, levels = sig.dif.fun[[i]]$Fun_Cat_CE_ML[order(sig.dif.fun[[i]]$estimate)])
-    
-    p <- ggplot(sig.dif.fun[[i]], aes(x = Fun_Cat_CE_ML, y = estimate)) + 
-      geom_point(size = 2.5) +
-      geom_hline(yintercept = 0, col= "red") +
-      theme_bw() +
-      theme(
-        axis.text = element_text(size = 12),
-        plot.title = element_text(hjust = 0.5, size = 13),
-        legend.position = "none",
-        axis.title.y = element_blank(),
-        axis.title.x = element_text(size = 12)
-          ) +
-      ylim(-26,10) +
-      labs(title = i, y = expression(paste(log[2], " fold change"))) +
-      scale_x_discrete(labels = c("Posttranslational modification, protein turnover, chaperones" = "Posttranslational modification, protein\nturnover, chaperones", "Translation, ribosomal structure & biogenesis" = "Translation, ribosomal structure\n& biogenesis")) +
-      coord_flip()
-  
-   plot.list2[[i]] = p
-}
-
-plot.list2 <- align_plots(plot.list2[[1]], plot.list2[[3]], plot.list2[[2]], align = "v")
-
-p <- grid.arrange(plot.list2[[1]], plot.list2[[2]], plot.list2[[3]], ncol = 1, heights = c(0.6,0.5,0.3))
-
-ggsave("Figures/change-genes2.jpeg", p, units = "in", width = 7, height = 10, dpi = 600)
-
-
-sig.dif.fundf <- data.frame()
-
-for(i in 1:length(names(sig.dif.fun))) {
-  sig.dif.fundf <- rbind(cbind(plant.water = names(sig.dif.fun)[i],sig.dif.fun[[i]]), sig.dif.fundf)
-}
-
-## Colored by Gene ####
-show_col(viridis_pal(option = "turbo")(12))
-viridis_pal(option = "turbo")(12)
-
-color_map <- c("Amino acid transport & metabolism" = "#30123BFF", 
-               "Carbohydrate transport & metabolism" = "#4454C4FF", 
-               "Cell wall/membrane/envelope biogenesis" = "#4490FEFF",
-               "Defense mechanisms" = "#1FC8DEFF", 
-               "Energy production & conversion" = "#29EFA2FF",
-               "General function prediction only" = "#7DFF56FF",
-               "Mobilome: prophages, transposons" = "#C1F334FF",
-               "Posttranslational modification, protein turnover, chaperones" = "#F1CA3AFF",
-               "Replication, recombination & repair" = "#FE922AFF",
-               "Signal transduction mechanisms" = "#EA4F0DFF",
-               "Symbiosis" = "#BE2102FF",
-               "Translation, ribosomal structure & biogenesis" = "#7A0403FF")
-
-sig.dif.fundf$Fun_Cat_CE_ML <- as.character(sig.dif.fundf$Fun_Cat_CE_ML)
-sig.dif.fundf <- sig.dif.fundf[order(sig.dif.fundf$Fun_Cat_CE_ML),]
-
-leg_plot <- ggplot(sig.dif.fundf, aes(x = Fun_Cat_CE_ML, y = estimate, col = Fun_Cat_CE_ML)) +
-  theme_classic() +
-  geom_point() +
-  scale_color_manual(values = color_map)
-
-legend <- g_legend(leg_plot)
-
-plot.list3 <- list()
-
-for(i in names(res.list)) {
-  if(nrow(res.list[[i]]) > 0) {
-    
- p <- ggplot(res.list[[i]], aes(x = gene, y = estimate, col = Fun_Cat_CE_ML)) + 
-    geom_point(size = 3) +
-    theme_bw() +
-    theme(
-      #axis.text.y = element_text(angle = -90, hjust = 0, vjust = 0.5, size = 12),
-      plot.title = element_text(hjust = 0.5, size = 12),
-      legend.position = "none",
-      axis.title.x = element_blank(),
-        ) +
-    labs(title = plot.name.list[[i]], y = expression(paste(log[2], " fold change"))) +
-   ylim(-7,5) +
-   scale_color_manual(values = color_map, drop = F) +
-   coord_flip()
-  
-   plot.list3[[i]] = p
-  }
-}
-
-p <- grid.arrange(plot.list3[[1]], 
-             plot.list3[[3]], plot.list3[[2]], legend, ncol = 2)
-
-ggsave("Figures/Gene_change.jpeg", p, height = 10, width = 10, units = "in", dpi = 600)
 
 # Soil ####
 soil <- read.csv("Data/Final-Data/Soil-CN.csv")
-soil$perc.N <- (soil$Total.N..µg.*0.001)/soil$Sample.Weight..mg..from.Sample.List
+soil$perc.N <- (soil$Total.N..µg.*0.001)/soil$Sample.Weight..mg..from.Sample.List*100
+soil$perc.C <- (soil$Total.C..µg.*0.001)/soil$Sample.Weight..mg..from.Sample.List*100
 soil <- merge(soil, metadata, by.x = "Sample.ID", by.y = "PlotXSubTreatment")
 
 soil$CN <- soil$Total.C..µg./soil$Total.N..µg.
@@ -688,7 +1141,14 @@ ggplot(soil, aes(x = PlantTrt, y = CN)) +
 ggplot(soil, aes(x = WaterTrt, y = perc.N, group = interaction(WaterTrt, PlantTrt), fill = PlantTrt)) +
   geom_boxplot() 
 
-soil.fig <- ggplot(soil, aes(x = WaterTrt, y = perc.N, group = interaction(WaterTrt, PlantTrt), color = PlantTrt)) +
+ggplot(soil, aes(x = WaterTrt, y = perc.C, group = interaction(WaterTrt, PlantTrt), fill = PlantTrt)) +
+  geom_boxplot() 
+
+ggplot(soil, aes(x = perc.N, y = perc.C)) +
+  geom_point() +
+  geom_smooth(method = "lm")
+         
+ggplot(soil, aes(x = WaterTrt, y = perc.N/100, group = interaction(WaterTrt, PlantTrt), color = PlantTrt)) +
   geom_boxplot() +
   theme_classic() +
   theme(
@@ -705,22 +1165,48 @@ ggsave("Figures/soil.jpeg", soil.fig, dpi = 600, units = "in", width = 6, height
 
 library(lme4)
 library(lmerTest)
-m1 <- lmer(CN ~ PlantTrt + WaterTrt + (1|Plot), data = soil)
+
+# no interactive effects
+hist(sqrt(soil$CN))
+m1 <- lmer(CN ~ PlantTrt * WaterTrt + (1|Plot), data = soil)
 plot(fitted(m1), resid(m1))
 qqnorm(resid(m1))
 qqline(resid(m1), col = 2, lwd = 2, lty = 2)
 anova(m1)
 
-m2 <- lmer(C.ug ~ plant.water + (1|Plot), data = soil)
+m1 <- lmer(CN ~ PlantTrt + WaterTrt + (1|Plot), data = soil)
+plot(fitted(m1), resid(m1))
+qqnorm(resid(m1))
+qqline(resid(m1), col = 2, lwd = 2, lty = 2)
+summary(m1)
+anova(m1) # effect of plants
+
+pairs(emmeans(m1, ~PlantTrt))
+
+m2 <- lmer(perc.C ~ PlantTrt * WaterTrt + (1|Plot), data = soil)
 plot(fitted(m2), resid(m2))
 qqnorm(resid(m2))
 qqline(resid(m2), col = 2, lwd = 2, lty = 2)
-anova(m2)
+anova(m2) # nothing
 
-m3 <- lm(perc.N ~ PlantTrt * WaterTrt, data = soil)
+m2 <- lmer(perc.C ~ PlantTrt + WaterTrt + (1|Plot), data = soil)
+plot(fitted(m2), resid(m2))
+qqnorm(resid(m2))
+qqline(resid(m2), col = 2, lwd = 2, lty = 2)
+summary(m2)
+anova(m2) # nothing
+
+m3 <- lmer(asin(sqrt(perc.N)) ~ PlantTrt * WaterTrt + (1|Plot), data = soil)
 plot(fitted(m3), resid(m3))
 qqnorm(resid(m3))
 qqline(resid(m3), col = 2, lwd = 2, lty = 2)
+anova(m3)
+
+m3 <- lmer(asin(sqrt(perc.N)) ~ PlantTrt + WaterTrt + (1|Plot), data = soil)
+plot(fitted(m3), resid(m3))
+qqnorm(resid(m3))
+qqline(resid(m3), col = 2, lwd = 2, lty = 2)
+summary(m3)
 anova(m3)
 
 # Biomass ####
@@ -730,7 +1216,15 @@ calcSE<-function(x){
 }
 
 bio <- read.csv("Data/Final-Data/Plant-Biomass.csv")
-bio <- merge(bio, metadata.nocontrols[,c(6,7,10,12,13)], by.x = c("Plot", "Subplot"), by.y = c("Plot", "PlotSubTreatment"))
+
+#bio.w <- pivot_wider(bio, names_from = "Species", values_from = "Weight.g")
+
+bio <- merge(bio, metadata.nocontrols[,c(1,6,7,10,12,13,15)], by.x = c("Plot", "Subplot"), by.y = c("Plot", "PlotSubTreatment"))
+
+#write.csv(bio, "Data/bio-meta-comparison.csv", row.names = F)
+bio.dups <- bio[duplicated(bio[,1:4]),] # 1 duplicate
+
+
 
 ggplot(bio, aes(x = WaterTrt, y = Weight.g, fill = interaction(PlantTrt, FunGroup))) +
   geom_boxplot() 
@@ -760,157 +1254,48 @@ ggplot(bio.sum, aes(x = WaterTrt, y = avg.weight, fill = PlantTrt)) +
   geom_bar(stat = "identity", position = "dodge", col = "black") + 
   geom_errorbar(aes(ymin = avg.weight - se.weight, ymax = avg.weight + se.weight), width = 0.2, position = position_dodge(0.9)) 
 
-# what if we remove the contaminated treatments?
-## Total of 15 contaminated treatments (out of 66 total)
-## 23A, 23B, 27B, 29A, 29B, 49A, 55B, 87A, 91A, 97A, 30B, 98B, 93E, 23E, 29E
-## 
+# Latlong BS ####
+# distancy decay code
+library(geosphere)
+library(vegan)
+library(microbiome)
+library(phyloseq)
 
-# #### DESeq on Functions ####
-# counts.fun <- data.frame(cbind(gene = row.names(decontam_counts_nocontrols), decontam_counts_nocontrols)) # need non norm counts for DESeq so go back through, maybe just make a gene to reduced function sheet... that might be easier 
-# 
-# # counts.fun <- left_join(norm.counts.fun, fun.gene, by = "gene")
-# # 
-# # norm.counts.fun$COG20_CATEGORY <- ifelse(norm.counts.fun$COG20_CATEGORY == "NULL", norm.counts.fun$COG_CATEGORY, norm.counts.fun$COG20_CATEGORY)
-# # 
-# # unique(norm.counts.fun[!nchar(norm.counts.fun$COG20_CATEGORY) > 5, ]$COG20_CATEGORY)
-# # 
-# # norm.counts.fun[which(norm.counts.fun$COG20_CATEGORY == "T"),]$COG20_CATEGORY <- "Signal transduction mechanisms"
-# # 
-# # norm.counts.fun[which(norm.counts.fun$COG20_CATEGORY == "L"),]$COG20_CATEGORY <- "Replication, recombination and repair"
-# # 
-# # norm.counts.fun[which(norm.counts.fun$COG20_CATEGORY == "S"),]$COG20_CATEGORY <- "Function unknown"
-# # 
-# # norm.counts.fun[which(norm.counts.fun$COG20_CATEGORY == "E"),]$COG20_CATEGORY <- "Amino acid transport and metabolism"
-# # 
-# # norm.counts.fun[which(norm.counts.fun$COG20_CATEGORY == "G"),]$COG20_CATEGORY <- "Carbohydrate transport and metabolism"
-# # 
-# # norm.counts.fun[which(norm.counts.fun$COG20_CATEGORY == "C"),]$COG20_CATEGORY <- "Energy production and conversion"
-# # 
-# # norm.counts.fun[which(norm.counts.fun$COG20_CATEGORY == "P"),]$COG20_CATEGORY <- "Inorganic ion transport and metabolism"
-# # 
-# # norm.counts.fun[which(norm.counts.fun$COG20_CATEGORY == "M"),]$COG20_CATEGORY <- "Cell wall/membrane/envelope biogenesis"
-# # 
-# # norm.counts.fun[which(norm.counts.fun$COG20_CATEGORY == "I"),]$COG20_CATEGORY <- "Lipid transport and metabolism"
-# # 
-# # norm.counts.fun[which(norm.counts.fun$COG20_CATEGORY == "V"),]$COG20_CATEGORY <- "Defense mechanisms"
-# # 
-# # norm.counts.fun[which(norm.counts.fun$COG20_CATEGORY == "N"),]$COG20_CATEGORY <- "Cell motility"
-# # 
-# # norm.counts.fun[which(norm.counts.fun$COG20_CATEGORY == "Q"),]$COG20_CATEGORY <- "Secondary metabolites biosynthesis, transport and catabolism"
-# # 
-# # norm.counts.fun <- norm.counts.fun[,c(1:67,77)]
-# # 
-# # norm.counts.fun[,2:67] <- norm.counts.fun[,2:67] %>% mutate_all(as.numeric)
-# # 
-# # test <- separate(norm.counts.fun, COG20_CATEGORY, into = c("newcog1", "newcog2", "newcog3", "newcog4", "newcog5", "newcog6", "newcog7", "newcog8", "newcog9"), sep = "!!!")
-# 
-# #write.csv(test, "Data/norm-counts-fun.csv", row.names = F, na = "")
-# fun.reduced <- read.csv("Data/function-reduced.csv", na = "")
-# fun.reduced$gene <- as.factor(fun.reduced$gene)
-# counts.fun <- left_join(counts.fun, fun.reduced, by = "gene")
-# counts.fun[,2:67] <- counts.fun[,2:67] %>% mutate_all(as.numeric)
-# 
-# tmp2 <- data.frame()
-# 
-# for(i in 1:7) {
-#   tmp <- counts.fun[,c(1:67,67+i)]
-#   colnames(tmp)[68] <- "COG20_CATEGORY_reduced"
-#   if(i %in% 2:7) {
-#     tmp <- tmp[!is.na(tmp$COG20_CATEGORY_reduced),]
-#   }
-#   tmp2 <- rbind(tmp2, tmp)
-# } # do we want to lump COG "Function Unknown" with our own category? what to do about when a gene has both COG Function unknown and other known functions? 
-# tmp2[is.na(tmp2$COG20_CATEGORY_reduced),]$COG20_CATEGORY_reduced <- "NULL"
-# 
-# dds.fun <- tmp2 %>%
-#   group_by(COG20_CATEGORY_reduced) %>%
-#   dplyr::summarise(across(2:67, sum))
-# 
-# dds.fun <- as.data.frame(dds.fun)
-# row.names(dds.fun) <- dds.fun$COG20_CATEGORY_reduced
-# dds.fun <- as.matrix(dds.fun)[,-1]
-# mode(dds.fun) <- "numeric"
-# 
-# dds.fun <- DESeqDataSetFromMatrix(dds.fun,
-#                                    colData = metadata.nocontrols,
-#                                    design = ~ plant.water)
-# dds.fun <- estimateSizeFactors(dds.fun)
-# 
-# dds.fun <- DESeq(dds.fun)
-# 
-# plotDispEsts(dds.fun)
-# 
-# contrasts <- c("FC.FW", 
-#                "FC.FD", 
-#                "FC.MD", 
-#                "FC.MW", 
-#                "GC.GD", 
-#                "GC.GW", 
-#                "GC.MD",
-#                "GC.MW",
-#                "GC.FC", 
-#                "GD.FD",
-#                "GW.FW",
-#                "FD.MD",
-#                "FW.MW")
-# 
-# contrast.list <- list(FC.FW = c("plant.water","forb.Control","forb.Watering"),
-#                       FC.FD = c("plant.water","forb.Control","forb.Drought"),
-#                       FC.MD = c("plant.water","forb.Control","mix.Drought"),
-#                       FC.MW = c("plant.water","forb.Control","mix.Watering"),
-#                       GC.GD = c("plant.water","grasses.Control","grasses.Drought"),
-#                       GC.GW = c("plant.water","grasses.Control","grasses.Watering"),
-#                       GC.MD = c("plant.water","grasses.Control","mix.Drought"),
-#                       GC.MW = c("plant.water","grasses.Control","mix.Watering"),
-#                       GC.FC = c("plant.water","grasses.Control","forb.Control"),
-#                       GD.FD = c("plant.water","grasses.Drought","forb.Drought"),
-#                       GW.FW = c("plant.water","grasses.Watering","forb.Watering"),
-#                       FD.MD = c("plant.water","forb.Drought","mix.Drought"),
-#                       FW.MW = c("plant.water", "forb.Watering", "mix.Watering"))
-# 
-# plot.name.list <- list(FC.FW = "Forb Control v Forb Watering",
-#                        FC.FD = "Forb Control v Forb Drought",
-#                        FC.MD = "Forb Control v Mix Drought",
-#                        FC.MW = "Forb Control v Mix Watering",
-#                        GC.GD = "Grass Control v Grass Drought",
-#                        GC.GW = "Grass Control v Grass Watering",
-#                        GC.MD = "Grass Control v Mix Drought",
-#                        GC.MW  = "Grass Control v Mix Watering",
-#                        GC.FC = "Grass Control v Forb Control",
-#                        GD.FD = "Grass Drought v Forb Drought",
-#                        GW.FW = "Grass Watering v Forb Watering",
-#                        FD.MD = "Forb Drought v Mix Drought",
-#                        FW.MW = "Forb Watering v Mix Watering")
-# 
-# alpha = 0.05
-# res.list <- list()
-# plot.list <- list()
-# sig.genes <- c()
-# 
-# for(i in contrasts) {
-#   #get results for each contrast
-#   res <- results(dds.fun, contrast = contrast.list[[i]], pAdjustMethod = "BH")
-#   #filter results by p-value
-#   res.alpha <- res[which(res$padj < alpha), ]
-#   #tidy results 
-#   res.list[[i]] <- tidy(res.alpha)
-# 
-#  res.list[[i]]$gene <- factor(res.list[[i]]$gene, levels = res.list[[i]]$gene[order(res.list[[i]]$estimate)])
-#   
-#  if(nrow(res.list[[i]]) > 0) {
-#    p <- ggplot(res.list[[i]], aes(x = gene, y = estimate)) + 
-#     geom_point(size = 3) +
-#     theme_bw() +
-#     theme(
-#       axis.text.x = element_text(angle = -90, hjust = 0, vjust = 0.5, size = 12),
-#       plot.title = element_text(hjust = 0.5, size = 12),
-#       legend.position = "none",
-#       axis.title.x = element_blank(),
-#         ) +
-#     labs(title = plot.name.list[[i]], y = expression(paste(log[2], " fold change")))
-#   
-#    plot.list[[i]] = p
-#  }
-#    sig.genes <- c(as.character(res.list[[i]]$gene), sig.genes)
-# }
-# 
+# phyloseq obj
+ps
+
+# get lat and long
+geo = data.frame(ps@sam_data$long, ps@sam_data$lat)
+
+# defining geographic distance between two locations -
+# haversine distance (accounts for spherical earth)
+d.geo = distm(geo, fun = distHaversine)
+dist.geo = as.dist(d.geo)
+
+ps.hell <- transform(ps, "hellinger")
+
+# getting community distances have to multiply by 1/sqrt(2)
+# to get scaled 0-1 as current range is 0-sqrt(2)
+comm.dist.hell = vegdist(1/sqrt(2) * as.matrix(t(ps.hell@otu_table)),
+    method = "euclidean")
+
+# test
+mantel.test.hell = vegan::mantel(comm.dist.hell, dist.geo, method = "spearman",
+    permutations = 9999, na.rm = TRUE)
+mantel.test.hell
+
+mantel.stats <- data.frame(label = paste("r = ", signif(mantel.test.hell$statistic,
+    3), "\nP = ", signif(mantel.test.hell$signif, 3)))
+
+# plot
+dist_hell <- ggplot(mapping = aes(x = jitter(dist.geo, amount = 1),
+    y = comm.dist.hell)) + 
+  theme_bw() + 
+  geom_point(shape = 16, size = 1, alpha = 0.1, color = "gray25") + 
+  geom_smooth(method = "lm", color = "orange", se = F) + 
+  labs(x = "Geographical Separation (m)", y = "Hellinger Distance") + 
+  geom_text(data = mantel.stats, aes(x = 0.5, y = 0.5, label = label), hjust = 0, size = 3) +
+  theme(text = element_text(size = 14))
+
+dist_hell
+

@@ -515,8 +515,18 @@ for(i in names(res.list)) {
 
 plot.list2 <- list()
 
+
 for(i in names(sig.dif.tax)){
     
+  sig.dif.tax[[i]]$Family <- recode_factor(sig.dif.tax[[i]]$Family, 
+                                         Burkholderiales = "Unclassified Burkholderiales",
+                                         Chloroflexi = "Unclassified Chloroflexi",
+                                         Deltaproteobacteria = "Unclassified Deltaproteobacteria",
+                                         Coriobacteriia = "Unclassified Coriobacteriia",
+                                         Myxococcales = "Unclassified Myxococcales",
+                                         Thaumarchaeota = "Unclassified Thaumarchaeota"
+                                         )
+  
     sig.dif.tax[[i]]$Family <- factor(sig.dif.tax[[i]]$Family, levels = sig.dif.tax[[i]]$Family[order(sig.dif.tax[[i]]$estimate)])
     
     p <- ggplot(sig.dif.tax[[i]], aes(x = Family, y = estimate, col = Phylum)) + 
@@ -983,7 +993,7 @@ dist_hell <- ggplot(mapping = aes(x = jitter(dist.geo, amount = 1),
 
 dist_hell
 
-## Supplement Table ####
+# Supplement Table ####
 samp_data <- metadata.nocontrols %>%
   mutate(AllPlantSpeciesInCore = ifelse(str_detect(AllPlantSpeciesInCore, "LOMU/VUMI"), 'LOMU', as.character(AllPlantSpeciesInCore)),
          'Bromus hordeaceus' = ifelse(str_detect(AllPlantSpeciesInCore, "Bromus"), 1, 0),
